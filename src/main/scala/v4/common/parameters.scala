@@ -64,7 +64,7 @@ case class BoomCoreParams(
 
   useAtomicsOnlyForIO: Boolean = false,
   ftq: FtqParameters = FtqParameters(nEntries=16),
-  intToFpLatency: Int = 2,
+  intToFpLatency: Int = 4,
   imulLatency: Int = 3,
   nPerfCounters: Int = 2,
   numRXQEntries: Int = 4,

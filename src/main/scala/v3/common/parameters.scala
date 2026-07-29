@@ -48,7 +48,7 @@ case class BoomCoreParams(
   enableBTBFastRepair: Boolean = true,
   useAtomicsOnlyForIO: Boolean = false,
   ftq: FtqParameters = FtqParameters(),
-  intToFpLatency: Int = 2,
+  intToFpLatency: Int = 4,
   imulLatency: Int = 3,
   nPerfCounters: Int = 0,
   numRXQEntries: Int = 4,
