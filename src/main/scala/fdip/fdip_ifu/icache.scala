@@ -255,10 +255,8 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   dontTouch(s1_ready)
   dontTouch(s1_prefetch_idx)
   dontTouch(s1_prefetch_tag)
-  val invalidated   = RegInit(false.B)
+  val invalidated = RegInit(false.B)
   dontTouch(invalidated)
-  // val refill_valid  = RegInit(false.B)
-  // val refill_fire   = tl_out.a.fire
   val s2_miss = s2_valid && !s2_hit && !s2_resp_hit 
 
 
@@ -277,18 +275,35 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   val s1_prefetch_hit = Wire(Vec(nWays, Bool()))
   when (missRespVal) {
     for(i <- 0 until 2){
-      tag_array(i).write(missResp.vSetIdx, VecInit(Seq.fill(nWays)(missResp.blkPaddr>>idxBits)), Seq.tabulate(nWays)(missResp.way === _.U))
+      when (!invalidated && !io.invalidate) {
+        tag_array(i).write(missResp.vSetIdx, VecInit(Seq.fill(nWays)(missResp.blkPaddr>>idxBits)), Seq.tabulate(nWays)(missResp.way === _.U))
+      }
     }
   }
-  //TODO: update vb_entry
-  val vb_array = RegInit(0.U((nSets*nWays).W))
-  when (missRespVal) {
-    vb_array := vb_array.bitSet(Cat(missResp.way, missResp.vSetIdx), missRespVal && !invalidated)
-  }
 
+  val vb_array = RegInit(0.U((nSets*nWays).W))
+  val refillStartMask = missunit.io.refill_start.map { start =>
+    Mux(start.valid,
+      UIntToOH(Cat(start.bits.way, start.bits.vSetIdx), nSets * nWays),
+      0.U((nSets * nWays).W))
+  }.reduce(_ | _)
+  val refillDoneMask = Mux(missRespVal && !invalidated && !io.invalidate,
+    UIntToOH(Cat(missResp.way, missResp.vSetIdx), nSets * nWays),
+    0.U((nSets * nWays).W))
+  // Invalidate a victim as soon as its refill is allocated. This prevents
+  // hits on the old line while the replacement transaction is in flight.
   when (io.invalidate) {
     vb_array := 0.U
+  }.elsewhen (refillStartMask.orR || refillDoneMask.orR) {
+    // A same-cycle refill start wins over a completion for the same entry.
+    vb_array := (vb_array & ~refillStartMask) | (refillDoneMask & ~refillStartMask)
+  }
+
+  // Keep the invalidate guard until every fetch and prefetch refill drains.
+  when (io.invalidate) {
     invalidated := true.B
+  }.elsewhen (!missunit.io.refill_busy) {
+    invalidated := false.B
   }
 
   // val s2_dout   = Wire(Vec(nWays, Vec(numBanks,UInt(bankBits.W))))
@@ -316,7 +331,7 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   
   for (i <- 0 until nWays) {
     val s0_ren = s0_valid
-    val wen = (missRespVal && !invalidated) && missResp.way === i.U
+    val wen = (missRespVal && !invalidated && !io.invalidate) && missResp.way === i.U
 
     for (bank <- 0 until numBanks) {
       val dataArray = dataArrays(i)(bank)
@@ -401,4 +416,3 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
     "" + (if (nBanks == 2) "Dual-banked" else "Single-banked"),
     "I-TLB ways    : " + cacheParams.nTLBWays + "\n")
 }
-

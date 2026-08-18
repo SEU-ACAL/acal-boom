@@ -63,6 +63,10 @@ class ICacheDataWriteBundle(implicit p: Parameters) extends BoomBundle  with Has
 }
 class ICacheMissUnitIO(edge: TLEdgeOut)(implicit p: Parameters) extends BoomBundle with HasBoomFrontendParameters{
 
+  // There are four demand and eight prefetch MSHRs.  Keeping one start
+  // event per MSHR preserves simultaneous demand/prefetch allocations.
+  private val nRefillSources = 12
+
   // control
   val fencei: Bool = Input(Bool())
   val flush:  Bool = Input(Bool())
@@ -71,6 +75,8 @@ class ICacheMissUnitIO(edge: TLEdgeOut)(implicit p: Parameters) extends BoomBund
   // fetch
   val fetch_req:  DecoupledIO[ICacheMissReq] = Flipped(DecoupledIO(new ICacheMissReq()))
   val fetch_resp: Valid[ICacheMissResp]      = ValidIO(new ICacheMissResp())
+  val refill_busy: Bool = Output(Bool())
+  val refill_start = Vec(nRefillSources, ValidIO(new ICacheMissReq()))
   // prefetch
   val prefetch_req: DecoupledIO[ICacheMissReq] = Flipped(DecoupledIO(new ICacheMissReq()))
 //   // SRAM Write Req
@@ -98,6 +104,7 @@ class ICacheMSHRIO(edge: TLEdgeOut)(implicit p: Parameters) extends BoomBundle w
   // fetch
   val req:  DecoupledIO[ICacheMissReq] = Flipped(DecoupledIO(new ICacheMissReq()))//目前兼容lookup的功能
   val resp: Valid[MSHRMissResp]      = ValidIO(new MSHRMissResp())//返回写入data和tag的必要数据
+  val busy: Bool = Output(Bool())
 
   val lookUps:   Vec[LookUpMSHR]            = Flipped(Vec(2, new LookUpMSHR())) //1:fetch 2:pre-fetch
   val acquire                               = DecoupledIO(new TLBundleA(edge.bundle))
@@ -152,6 +159,7 @@ class ICacheMSHR(edge: TLEdgeOut,ID:Int)(implicit p: Parameters) extends BoomMod
     io.resp.bits.blkPaddr := blkPaddr
     io.resp.bits.vSetIdx  := vSetIdx
     io.resp.bits.way  := way
+    io.busy := valid
 
     io.acquire.valid := valid && !issued && !io.flush && !io.fencei
     private val getBlock = edge.Get(
@@ -194,6 +202,11 @@ class ICacheMissUnit(edge: TLEdgeOut,refillCycles:Int)(implicit p: Parameters) e
     private val prefetchAcquireArb  = Module(new Arbiter((new TLBundleA(edge.bundle)), nPrefetchMSHRs))
     private val totalAcquireArb  = Module(new Arbiter((new TLBundleA(edge.bundle)), 2))
     val all_mshrs = mshrs ++ pre_mshrs
+    io.refill_busy := all_mshrs.map(_.io.busy).reduce(_ || _)
+    io.refill_start.foreach { start =>
+      start.valid := false.B
+      start.bits := 0.U.asTypeOf(new ICacheMissReq())
+    }
     val fetchHitVec = WireInit(VecInit(all_mshrs.map(mshr => mshr.io.lookUps(0).hit)))
     val prefetchHitVec = WireInit(VecInit(all_mshrs.map(mshr => mshr.io.lookUps(1).hit)))
     assert(PopCount(fetchHitVec) <= 1.U, "ICacheMissUnit: multiple MSHR hits on fetch_req")
@@ -241,6 +254,8 @@ class ICacheMissUnit(edge: TLEdgeOut,refillCycles:Int)(implicit p: Parameters) e
         mshrs(i).io.invalidate := respIdReg === i.U && respDoneReg
         mshrs(i).io.req.valid  := (i.U === mshrSel) && io.fetch_req.valid && !mshrFull && (!fetchHitVec.reduce(_ || _)) && (!prefetchHitVec.reduce(_ || _))
         mshrs(i).io.req.bits   := io.fetch_req.bits
+        io.refill_start(i).valid := mshrs(i).io.req.fire
+        io.refill_start(i).bits := mshrs(i).io.req.bits
         acquireArb.io.in(i) <> mshrs(i).io.acquire
     }
     (0 until nPrefetchMSHRs).foreach{i =>
@@ -254,7 +269,9 @@ class ICacheMissUnit(edge: TLEdgeOut,refillCycles:Int)(implicit p: Parameters) e
       pre_mshrs(i).io.invalidate := respIdReg === (i+nMSHRs).U && respDoneReg
       pre_mshrs(i).io.req.valid  := (i.U === prefetch_mshrSel) && !(io.fetch_req.valid&&io.prefetch_req.bits.blkPaddr===io.fetch_req.bits.blkPaddr&&io.fetch_req.bits.vSetIdx===io.prefetch_req.bits.vSetIdx)&&
                                          io.prefetch_req.valid && !prefetch_mshrFull && (!fetchHitVec.reduce(_ || _)) && (!prefetchHitVec.reduce(_ || _))
-      pre_mshrs(i).io.req.bits   := io.prefetch_req.bits
+        pre_mshrs(i).io.req.bits   := io.prefetch_req.bits
+      io.refill_start(i+nMSHRs).valid := pre_mshrs(i).io.req.fire
+      io.refill_start(i+nMSHRs).bits := pre_mshrs(i).io.req.bits
       prefetchAcquireArb.io.in(i) <> pre_mshrs(i).io.acquire
     }
 
@@ -275,4 +292,3 @@ class ICacheMissUnit(edge: TLEdgeOut,refillCycles:Int)(implicit p: Parameters) e
 
 
 }
-
