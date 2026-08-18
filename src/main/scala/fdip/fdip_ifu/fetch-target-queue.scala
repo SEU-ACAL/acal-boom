@@ -222,8 +222,8 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   // override val ftqSz: Int = boomParams.FDIPftq.nEntries
   assert(isPow2(ftqSz) && ftqSz >= 2)//now it onlty support pow2,
   val num_entries = ftqSz
-  private val idx_sz = log2Ceil(num_entries)
-  // println(f"Fetch Target Queue Size: $idx_sz")
+  private val ftqIdxBits = log2Ceil(num_entries)
+  private val ftqPtrBits = ftqIdxBits + 1
   val io = IO(new BoomBundle {
     val fromBpu     = Flipped(new BPUToFTQIO)
     val fromBackend = Flipped(new CTRLToFTQIO)
@@ -242,43 +242,43 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
     val debug_ftq_idx  = Input(Vec(coreWidth, UInt((log2Ceil(ftqSz)+1).W)))
     val debug_fetch_pc = Output(Vec(coreWidth, UInt(vaddrBitsExtended.W)))
   })
-  def GetPtr(idx: UInt,num:Int): UInt = {
-    return (idx )(log2Ceil(num)-1,0)
+  // FTQ pointers carry a wrap bit; storage arrays only consume the entry index.
+  def ftqMemIdx(ptr: UInt): UInt = {
+    ptr(ftqIdxBits - 1, 0)
   }
-  def GetFlag(idx: UInt,num:Int): UInt = {
-    return idx(log2Ceil(num))
+  def ftqWrap(ptr: UInt): Bool = {
+    ptr(ftqIdxBits)
   }
-  def isAfter(idx1:UInt,idx2:UInt,num:Int): Bool = {//越小越好
-    val flag1 = GetFlag(idx1,num)
-    val flag2 = GetFlag(idx2,num)
-    val ptr1  = GetPtr(idx1,num)
-    val ptr2  = GetPtr(idx2,num)
+  def isAfter(idx1:UInt,idx2:UInt): Bool = {//越小越好
+    val flag1 = ftqWrap(idx1)
+    val flag2 = ftqWrap(idx2)
+    val ptr1  = ftqMemIdx(idx1)
+    val ptr2  = ftqMemIdx(idx2)
     return Mux(flag1 === flag2, ptr1 < ptr2, ptr1 >ptr2)
   }
-  def isBefore(idx1:UInt,idx2:UInt,num:Int): Bool = {//这个得出谁更老
-    val flag1 = GetFlag(idx1,num)
-    val flag2 = GetFlag(idx2,num)
-    val ptr1  = GetPtr(idx1,num)
-    val ptr2  = GetPtr(idx2,num)
+  def isBefore(idx1:UInt,idx2:UInt): Bool = {//这个得出谁更老
+    val flag1 = ftqWrap(idx1)
+    val flag2 = ftqWrap(idx2)
+    val ptr1  = ftqMemIdx(idx1)
+    val ptr2  = ftqMemIdx(idx2)
     return Mux(flag1 === flag2, ptr1 > ptr2, ptr1 < ptr2)
   }
-  def isFull(idx1:UInt,idx2:UInt,num:Int): Bool = {//越小越好
-    val flag1 = GetFlag(idx1,num)
-    val flag2 = GetFlag(idx2,num)
-    val ptr1  = GetPtr(idx1,num)
-    val ptr2  = GetPtr(idx2,num)
+  def isFull(idx1:UInt,idx2:UInt): Bool = {//越小越好
+    val flag1 = ftqWrap(idx1)
+    val flag2 = ftqWrap(idx2)
+    val ptr1  = ftqMemIdx(idx1)
+    val ptr2  = ftqMemIdx(idx2)
     return flag1 =/= flag2 && ptr1 === ptr2
   }
-  def isEmpty(idx1:UInt,idx2:UInt,num:Int): Bool = {//越小越好
-    val flag1 = GetFlag(idx1,num)
-    val flag2 = GetFlag(idx2,num)
-    val ptr1  = GetPtr(idx1,num)
-    val ptr2  = GetPtr(idx2,num)
+  def isEmpty(idx1:UInt,idx2:UInt): Bool = {//越小越好
+    val flag1 = ftqWrap(idx1)
+    val flag2 = ftqWrap(idx2)
+    val ptr1  = ftqMemIdx(idx1)
+    val ptr2  = ftqMemIdx(idx2)
     return flag1 === flag2 && ptr1 === ptr2
   }
-  def CirWrapInc(idx:UInt,num:Int): UInt = {//越小越好
-
-    return Mux(GetPtr(idx,num) === (num-1).U, Cat(~GetFlag(idx,num),0.U(log2Ceil(num).W)), idx + 1.U)
+  def CirWrapInc(ptr:UInt): UInt = {//越小越好
+    Mux(ftqMemIdx(ptr) === (num_entries - 1).U, Cat(~ftqWrap(ptr), 0.U(ftqIdxBits.W)), ptr + 1.U)
   }
 
 
@@ -291,12 +291,12 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   // val ghist         = Seq.fill(2) { SRAMHelper(num_entries, new GlobalHistory) }
 
   //目前对这些指针的管理仍然高度依赖于位置，位置越靠前，优先级越低，之后考虑直接使用mux来做选择
-  val bpu_ptr    = RegInit(0.U((idx_sz+1).W))
-  val ifu_ptr    = RegInit(0.U((idx_sz+1).W))
-  val pf_ptr     = RegInit(0.U((idx_sz+1).W))
-  val commit_ptr = RegInit(0.U((idx_sz+1).W))//后端提交指针
-  val deq_ptr    = RegInit(0.U((idx_sz+1).W))//后端此次提交最年轻指令的ftq_idx
-  val full       = isFull(commit_ptr,bpu_ptr,num_entries)
+  val bpu_ptr    = RegInit(0.U(ftqPtrBits.W))
+  val ifu_ptr    = RegInit(0.U(ftqPtrBits.W))
+  val pf_ptr     = RegInit(0.U(ftqPtrBits.W))
+  val commit_ptr = RegInit(0.U(ftqPtrBits.W))//后端提交指针
+  val deq_ptr    = RegInit(0.U(ftqPtrBits.W))//后端此次提交最年轻指令的ftq_idx
+  val full       = isFull(commit_ptr,bpu_ptr)
 
 
   /* -------------------------------------------------------------------------- */
@@ -304,7 +304,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   /* -------------------------------------------------------------------------- */
   io.fromBpu.resp.ready := (!full)
   when(io.toICache.req.fire){
-    ifu_ptr := CirWrapInc(ifu_ptr,num_entries)
+    ifu_ptr := CirWrapInc(ifu_ptr)
   }
   // bpu info process
   val f1_resp    = io.fromBpu.resp.bits.f1
@@ -337,7 +337,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   dontTouch(bpu_last_stage_ghist)
   dontTouch(bpu_last_stage_resp)
   meta.io.w.wen     := bpu_last_stage_wen
-  meta.io.w.waddr   := bpu_last_stage_ptr
+  meta.io.w.waddr   := ftqMemIdx(bpu_last_stage_ptr)
   meta.io.w.wdata   := bpu_last_stage_meta
 
   //默认读优先，但如果重定向的话，写入的一定是无效信息，所以可以禁止写入
@@ -345,7 +345,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   这里发生读写冲突，会导致更新BPU晚一个周期，对整体的性能影响有待评估
    */
   redirect_mem.io.w.wen           := bpu_last_stage_wen//bpu_in_wen&&bpu_in_stage===BP_S3&& !(io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch)
-  redirect_mem.io.w.waddr         := bpu_last_stage_ptr
+  redirect_mem.io.w.waddr         := ftqMemIdx(bpu_last_stage_ptr)
   redirect_mem.io.w.wdata.ghist   := bpu_last_stage_ghist
   redirect_mem.io.w.wdata.ras_top := bpu_last_stage_ras_top
 
@@ -355,32 +355,32 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
 
 
   when(bpu_in_wen){
-    pc_mem(GetPtr(bpu_in_resp_ptr,num_entries)) := bpu_in_entry
-    cfi_offset(GetPtr(bpu_in_resp_ptr,num_entries)) := (bpu_in_resp.cfi_offset)
+    pc_mem(ftqMemIdx(bpu_in_resp_ptr)) := bpu_in_entry
+    cfi_offset(ftqMemIdx(bpu_in_resp_ptr)) := (bpu_in_resp.cfi_offset)
   }
   //Bpu ptr update
-  bpu_ptr := Mux(bpu_in_wen&&bpu_in_stage===BP_S1,CirWrapInc(bpu_in_resp_ptr,num_entries),bpu_ptr)
-  pf_ptr  := Mux(io.toPrefetch.fire&& !isAfter(pf_ptr,ifu_ptr,num_entries),CirWrapInc(pf_ptr,num_entries),pf_ptr)
+  bpu_ptr := Mux(bpu_in_wen&&bpu_in_stage===BP_S1,CirWrapInc(bpu_in_resp_ptr),bpu_ptr)
+  pf_ptr  := Mux(io.toPrefetch.fire&& !isAfter(pf_ptr,ifu_ptr),CirWrapInc(pf_ptr),pf_ptr)
   /* --------------------------------- ptr fix -------------------------------- */
 /* 
 1.BPU发生重定向的BPU_PTR<=IFU_PTR,此时说明这个发生重定向的指令已经送入IFU，此时需要刷新这个block，但然后恢复指针
 2.BPU_PTR>IFU_PTR,此时说明发生重定向的block并未送入IFU，此时不对IFU指针操作，也不用刷新IFU
  */
   when(bpu_s2_redirect){
-    bpu_ptr := CirWrapInc(io.fromBpu.resp.bits.f2.ftq_idx,num_entries)
-    when(!isBefore(io.fromBpu.resp.bits.f2.ftq_idx,ifu_ptr,num_entries)){
+    bpu_ptr := CirWrapInc(io.fromBpu.resp.bits.f2.ftq_idx)
+    when(!isBefore(io.fromBpu.resp.bits.f2.ftq_idx,ifu_ptr)){
       ifu_ptr :=io.fromBpu.resp.bits.f2.ftq_idx
     }
-    when(!isBefore(io.fromBpu.resp.bits.f2.ftq_idx,pf_ptr,num_entries)){
+    when(!isBefore(io.fromBpu.resp.bits.f2.ftq_idx,pf_ptr)){
       pf_ptr  := io.fromBpu.resp.bits.f2.ftq_idx
     }
   }
   when(bpu_s3_redirect){
-    bpu_ptr := CirWrapInc(io.fromBpu.resp.bits.f3.ftq_idx,num_entries)
-    when(!isBefore(io.fromBpu.resp.bits.f3.ftq_idx,ifu_ptr,num_entries)){
+    bpu_ptr := CirWrapInc(io.fromBpu.resp.bits.f3.ftq_idx)
+    when(!isBefore(io.fromBpu.resp.bits.f3.ftq_idx,ifu_ptr)){
       ifu_ptr :=io.fromBpu.resp.bits.f3.ftq_idx
     }
-    when(!isBefore(io.fromBpu.resp.bits.f3.ftq_idx,pf_ptr,num_entries)){
+    when(!isBefore(io.fromBpu.resp.bits.f3.ftq_idx,pf_ptr)){
       pf_ptr  := io.fromBpu.resp.bits.f3.ftq_idx
     }
   }
@@ -416,7 +416,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   //pfc入队只要没有full就行，这个full条件其实是pc_mem的，写入的地址来自ftq传往ifu的指针
   // io.fromIfu.predecode_infos.ready := (!full)
   when(io.fromIfu.predecode_infos.valid){
-    pd_mem(GetPtr(io.fromIfu.predecode_infos.bits.ftq_idx,num_entries)) := new_entry
+    pd_mem(ftqMemIdx(io.fromIfu.predecode_infos.bits.ftq_idx)) := new_entry
   }
 
 
@@ -429,7 +429,8 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   val bpd_update_fetch      = RegInit(false.B)
   val bpd_update_commit     = RegInit(false.B)
   val do_update_commit      = WireInit(false.B)
-  val bpd_update_idx        = Wire(UInt((log2Ceil(ftqSz)+1).W))
+  val bpd_update_ptr        = Wire(UInt(ftqPtrBits.W))
+  val bpd_update_idx        = ftqMemIdx(bpd_update_ptr)
   val bpd_update_entry      = RegNext(pd_mem(bpd_update_idx))
   val bpd_entry             = WireInit(pd_mem(bpd_update_idx))
   val bpd_redirect_entry    = WireInit(pd_mem(bpd_update_idx))
@@ -439,15 +440,15 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   val bpd_update_meta       = meta.io.r.resp.rdata
   val ifu_redirect_ghist    = WireInit(bpd_update_ghist)
   val backend_redirect_ghist = WireInit(bpd_update_ghist)
-  val bpd_update_target     = RegNext(pc_mem(GetPtr(CirWrapInc(bpd_update_idx,num_entries),num_entries)).start_pc)
+  val bpd_update_target     = RegNext(pc_mem(ftqMemIdx(CirWrapInc(bpd_update_ptr))).start_pc)
 
   val ras_update_info       = RegNext(Mux(io.fromBackend.redirect_val&&io.fromBackend.brupdate.b2.mispredict,pd_mem(bpd_update_idx),new_entry))
   //只有commit阶段可能遇到读写同时发生，此时阻塞读，直到写入完成
-  bpd_update_idx                     := Mux(io.fromBackend.redirect_val&&io.fromBackend.brupdate.b2.mispredict,
+  bpd_update_ptr                     := Mux(io.fromBackend.redirect_val&&io.fromBackend.brupdate.b2.mispredict,
                             io.fromBackend.redirect_ftq_idx,Mux(io.fromIfu.redirect_from_fetch,
                             io.fromIfu.redirect_ftq_idx,commit_ptr))
   meta.io.r.req.valid                := (commit_ptr=/=deq_ptr)
-  meta.io.r.req.bits.raddr           := commit_ptr
+  meta.io.r.req.bits.raddr           := ftqMemIdx(commit_ptr)
 
   //对于redirect_mem 读的优先级大于写，一般读是为了重定向，此时写入的一定无效
   /* 
@@ -463,16 +464,16 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
 
 
   deq_ptr                   := Mux(io.fromBackend.deq.valid,io.fromBackend.deq.bits,deq_ptr)
-  commit_ptr                := Mux(do_update_commit,CirWrapInc(commit_ptr,num_entries),commit_ptr)
+  commit_ptr                := Mux(do_update_commit,CirWrapInc(commit_ptr),commit_ptr)
 
 /* -------------------------------- fix entry ------------------------------- */
   // val br_update_entry
 //更新指针
   when(io.fromBackend.redirect_val){
     //恢复bpu_ptr
-    bpu_ptr             := CirWrapInc(io.fromBackend.redirect_ftq_idx,num_entries)
-    ifu_ptr             := CirWrapInc(io.fromBackend.redirect_ftq_idx,num_entries)
-    pf_ptr              := CirWrapInc(io.fromBackend.redirect_ftq_idx,num_entries)
+    bpu_ptr             := CirWrapInc(io.fromBackend.redirect_ftq_idx)
+    ifu_ptr             := CirWrapInc(io.fromBackend.redirect_ftq_idx)
+    pf_ptr              := CirWrapInc(io.fromBackend.redirect_ftq_idx)
     
     when(io.fromBackend.brupdate.b2.mispredict){
       val new_cfi_idx = (io.fromBackend.brupdate.b2.uop.pc_lob)/(coreInstBytes.U)//截断的指令属于下一个block
@@ -496,9 +497,9 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
     // ras_update_idx := redirect_entry.ras_idx
     pd_mem(bpd_update_idx) := bpd_redirect_entry
   }.elsewhen(io.fromIfu.redirect_from_fetch){//IFU redirect do not need to fix pd_mem
-    bpu_ptr             := CirWrapInc(io.fromIfu.redirect_ftq_idx,num_entries)
-    ifu_ptr             := CirWrapInc(io.fromIfu.redirect_ftq_idx,num_entries)
-    pf_ptr              := CirWrapInc(io.fromIfu.redirect_ftq_idx,num_entries)
+    bpu_ptr             := CirWrapInc(io.fromIfu.redirect_ftq_idx)
+    ifu_ptr             := CirWrapInc(io.fromIfu.redirect_ftq_idx)
+    pf_ptr              := CirWrapInc(io.fromIfu.redirect_ftq_idx)
   }
   dontTouch(do_update_commit)
   dontTouch(bpd_update_commit)
@@ -512,11 +513,11 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   送到ICache的请求需要保证ifu的指针不能跟上bpu指针
   */
   
-  io.toICache.req.valid          := (!isEmpty(ifu_ptr,bpu_ptr,num_entries)) && !(io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch) && 
-                                  (!(bpu_s2_redirect && !isBefore(io.fromBpu.resp.bits.f2.ftq_idx,ifu_ptr,num_entries)))&&
-                                  (!(bpu_s3_redirect && !isBefore(io.fromBpu.resp.bits.f3.ftq_idx,ifu_ptr,num_entries)))
-  io.toICache.req.bits.fetch_pc  := pc_mem(GetPtr(ifu_ptr,num_entries)).start_pc
-  io.toICache.req.bits.mask      := pc_mem(GetPtr(ifu_ptr,num_entries)).mask
+  io.toICache.req.valid          := (!isEmpty(ifu_ptr,bpu_ptr)) && !(io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch) &&
+                                  (!(bpu_s2_redirect && !isBefore(io.fromBpu.resp.bits.f2.ftq_idx,ifu_ptr)))&&
+                                  (!(bpu_s3_redirect && !isBefore(io.fromBpu.resp.bits.f3.ftq_idx,ifu_ptr)))
+  io.toICache.req.bits.fetch_pc  := pc_mem(ftqMemIdx(ifu_ptr)).start_pc
+  io.toICache.req.bits.mask      := pc_mem(ftqMemIdx(ifu_ptr)).mask
   //送出后ifu指针+1
 
   /* -------------------------------------------------------------------------- */
@@ -586,14 +587,14 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
 /* -------------------------------------------------------------------------- */
 /*                                 To Prefetch                                */
 /* -------------------------------------------------------------------------- */
-  io.toPrefetch.valid := (!isEmpty(pf_ptr,bpu_ptr,num_entries)) && !(io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch) 
-  io.toPrefetch.bits.fetch_pc := pc_mem(GetPtr(pf_ptr,num_entries)).start_pc
-  io.toPrefetch.bits.mask     := pc_mem(GetPtr(pf_ptr,num_entries)).mask
+  io.toPrefetch.valid := (!isEmpty(pf_ptr,bpu_ptr)) && !(io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch)
+  io.toPrefetch.bits.fetch_pc := pc_mem(ftqMemIdx(pf_ptr)).start_pc
+  io.toPrefetch.bits.mask     := pc_mem(ftqMemIdx(pf_ptr)).mask
 /* -------------------------------------------------------------------------- */
 /*                                   To IFU                                   */
 /* -------------------------------------------------------------------------- */
-  io.toIfu.req.valid                      := (!isEmpty(ifu_ptr,bpu_ptr,num_entries)) && !(io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch)
-  io.toIfu.req.bits.ftq_entry             := pc_mem(GetPtr(ifu_ptr,num_entries))
+  io.toIfu.req.valid                      := (!isEmpty(ifu_ptr,bpu_ptr)) && !(io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch)
+  io.toIfu.req.bits.ftq_entry             := pc_mem(ftqMemIdx(ifu_ptr))
   io.toIfu.req.bits.ftq_idx               := ifu_ptr
   io.toIfu.flushByBpu.s2_redirect.valid   := io.fromBpu.resp.bits.f2.hasRedirect
   io.toIfu.flushByBpu.s2_redirect.bits    := io.fromBpu.resp.bits.f2.ftq_idx
@@ -604,21 +605,22 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
 
 
 
-  io.toIfu.req.bits.ftq_offset.valid      := cfi_offset(GetPtr(ifu_ptr,num_entries)).valid
-  io.toIfu.req.bits.ftq_offset.bits       := cfi_offset(GetPtr(ifu_ptr,num_entries)).bits
+  io.toIfu.req.bits.ftq_offset.valid      := cfi_offset(ftqMemIdx(ifu_ptr)).valid
+  io.toIfu.req.bits.ftq_offset.bits       := cfi_offset(ftqMemIdx(ifu_ptr)).bits
   /* -------------------------------------------------------------------------- */
   /*                                 TO Backend                                 */
   /* -------------------------------------------------------------------------- */
   for (i <- 0 until 2) {
-    val idx = GetPtr(io.toBackend.get_ftq_pc(i).ftq_idx,num_entries)
-    val next_idx = CirWrapInc(io.toBackend.get_ftq_pc(i).ftq_idx, num_entries)
-    val next_is_enq = (next_idx === bpu_ptr) && io.fromBpu.resp.fire
-    val next_pc = Mux(next_is_enq, bpu_in_entry.start_pc, pc_mem(GetPtr(next_idx,num_entries)).start_pc)
+    val idx = ftqMemIdx(io.toBackend.get_ftq_pc(i).ftq_idx)
+    val next_ptr = CirWrapInc(io.toBackend.get_ftq_pc(i).ftq_idx)
+    val next_idx = ftqMemIdx(next_ptr)
+    val next_is_enq = (next_ptr === bpu_ptr) && io.fromBpu.resp.fire
+    val next_pc = Mux(next_is_enq, bpu_in_entry.start_pc, pc_mem(next_idx).start_pc)
 
     io.toBackend.get_ftq_pc(i).pc        := RegNext(pc_mem(idx).start_pc)
     io.toBackend.get_ftq_pc(i).next_pc   := RegNext(next_pc)
-    io.toBackend.get_ftq_pc(i).next_val  := RegNext((!isFull(next_idx,bpu_ptr,num_entries)) || next_is_enq)
-    io.toBackend.get_ftq_pc(i).com_pc    := RegNext(pc_mem(Mux(io.fromBackend.deq.valid, GetPtr(io.fromBackend.deq.bits,num_entries), GetPtr(commit_ptr,num_entries))).start_pc)
+    io.toBackend.get_ftq_pc(i).next_val  := RegNext((!isFull(next_ptr,bpu_ptr)) || next_is_enq)
+    io.toBackend.get_ftq_pc(i).com_pc    := RegNext(pc_mem(ftqMemIdx(Mux(io.fromBackend.deq.valid, io.fromBackend.deq.bits, commit_ptr))).start_pc)
     io.toBackend.get_ftq_pc(i).entry     := RegNext(pd_mem(idx))
     io.toBackend.get_ftq_pc(i).ghist     := RegNext(redirect_mem.io.r.resp.rdata.ghist)//TODO:fix it
   }

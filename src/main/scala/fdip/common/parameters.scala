@@ -49,7 +49,7 @@ case class BoomCoreParams(
   useAtomicsOnlyForIO: Boolean = false,
   ftq: boom.fdip.ifu.FtqParameters = boom.fdip.ifu.FtqParameters(),
   // FDIPftq: boom.fdip.ifu.FDIPFtqParameters = boom.fdip.ifu.FDIPFtqParameters(),
-  intToFpLatency: Int = 2,
+  intToFpLatency: Int = 4,
   imulLatency: Int = 3,
   nPerfCounters: Int = 0,
   numRXQEntries: Int = 4,

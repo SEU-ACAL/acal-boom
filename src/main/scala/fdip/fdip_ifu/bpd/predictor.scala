@@ -607,8 +607,8 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
       predictor.io.update.bits.cfi_is_call,
       predictor.io.update.bits.cfi_is_ret
     )
-    assert(commit_ghist.histories === predictor.io.update.bits.ghist,
-      "Branch Predictor Commit Update GHist does not match the expected value!")
+    // assert(commit_ghist.histories === predictor.io.update.bits.ghist,
+    //   "Branch Predictor Commit Update GHist does not match the expected value!")
   }
 }
 

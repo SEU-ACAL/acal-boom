@@ -365,11 +365,15 @@ class PredRenameStage(
 
   ren2_alloc_reqs := DontCare
 
+  private val ftqIdxBits = log2Ceil(ftqSz)
+  private val ftqPtrBits = ftqIdxBits + 1
+  def ftqMemIdx(ptr: UInt): UInt = ptr(ftqIdxBits - 1, 0)
+
   val busy_table = RegInit(VecInit(0.U(ftqSz.W).asBools))
   val to_busy = WireInit(VecInit(0.U(ftqSz.W).asBools))
   val unbusy = WireInit(VecInit(0.U(ftqSz.W).asBools))
 
-  val current_ftq_idx = Reg(UInt((log2Ceil(ftqSz)+1).W))
+  val current_ftq_idx = Reg(UInt(ftqPtrBits.W))
   var next_ftq_idx = current_ftq_idx
 
   for (w <- 0 until plWidth) {
@@ -378,22 +382,24 @@ class PredRenameStage(
     val is_sfb_br = ren2_uops(w).is_sfb_br && ren2_fire(w)
     val is_sfb_shadow = ren2_uops(w).is_sfb_shadow && ren2_fire(w)
 
-    val ftq_idx = ren2_uops(w).ftq_idx
+    val ftq_ptr = ren2_uops(w).ftq_idx
+    val ftq_idx = ftqMemIdx(ftq_ptr)
     when (is_sfb_br) {
-      io.ren2_uops(w).pdst := ftq_idx
+      io.ren2_uops(w).pdst := ftq_ptr
       to_busy(ftq_idx) := true.B
     }
-    next_ftq_idx = Mux(is_sfb_br, ftq_idx, next_ftq_idx)
+    next_ftq_idx = Mux(is_sfb_br, ftq_ptr, next_ftq_idx)
 
     when (is_sfb_shadow) {
       io.ren2_uops(w).ppred := next_ftq_idx
-      io.ren2_uops(w).ppred_busy := (busy_table(next_ftq_idx) || to_busy(next_ftq_idx)) && !unbusy(next_ftq_idx)
+      val next_ftq_mem_idx = ftqMemIdx(next_ftq_idx)
+      io.ren2_uops(w).ppred_busy := (busy_table(next_ftq_mem_idx) || to_busy(next_ftq_mem_idx)) && !unbusy(next_ftq_mem_idx)
     }
   }
 
   for (w <- 0 until numWbPorts) {
     when (io.wakeups(w).valid) {
-      unbusy(io.wakeups(w).bits.uop.pdst) := true.B
+      unbusy(ftqMemIdx(io.wakeups(w).bits.uop.pdst)) := true.B
     }
   }
 
