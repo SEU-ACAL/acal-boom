@@ -210,7 +210,9 @@ class ICacheMissUnit(edge: TLEdgeOut,refillCycles:Int)(implicit p: Parameters) e
     val fetchHitVec = WireInit(VecInit(all_mshrs.map(mshr => mshr.io.lookUps(0).hit)))
     val prefetchHitVec = WireInit(VecInit(all_mshrs.map(mshr => mshr.io.lookUps(1).hit)))
     assert(PopCount(fetchHitVec) <= 1.U, "ICacheMissUnit: multiple MSHR hits on fetch_req")
-    io.fetch_req.ready := !mshrFull || fetchHitVec.reduce(_ || _) || prefetchHitVec.reduce(_ || _)
+    val fetchHit = fetchHitVec.reduce(_ || _)
+    val prefetchHit = prefetchHitVec.reduce(_ || _)
+    io.fetch_req.ready := !mshrFull || fetchHit
 
     
     val mshrResps = all_mshrs.map(mshr => mshr.io.resp)
@@ -252,7 +254,7 @@ class ICacheMissUnit(edge: TLEdgeOut,refillCycles:Int)(implicit p: Parameters) e
         mshrs(i).io.lookUps(1).info.bits := io.prefetch_req.bits
         mshrs(i).io.lookUps(1).info.valid := io.prefetch_req.valid
         mshrs(i).io.invalidate := respIdReg === i.U && respDoneReg
-        mshrs(i).io.req.valid  := (i.U === mshrSel) && io.fetch_req.valid && !mshrFull && (!fetchHitVec.reduce(_ || _)) && (!prefetchHitVec.reduce(_ || _))
+        mshrs(i).io.req.valid  := (i.U === mshrSel) && io.fetch_req.valid && !mshrFull && !fetchHit
         mshrs(i).io.req.bits   := io.fetch_req.bits
         io.refill_start(i).valid := mshrs(i).io.req.fire
         io.refill_start(i).bits := mshrs(i).io.req.bits
@@ -268,7 +270,7 @@ class ICacheMissUnit(edge: TLEdgeOut,refillCycles:Int)(implicit p: Parameters) e
       pre_mshrs(i).io.lookUps(1).info.valid := io.prefetch_req.valid
       pre_mshrs(i).io.invalidate := respIdReg === (i+nMSHRs).U && respDoneReg
       pre_mshrs(i).io.req.valid  := (i.U === prefetch_mshrSel) && !(io.fetch_req.valid&&io.prefetch_req.bits.blkPaddr===io.fetch_req.bits.blkPaddr&&io.fetch_req.bits.vSetIdx===io.prefetch_req.bits.vSetIdx)&&
-                                         io.prefetch_req.valid && !prefetch_mshrFull && (!fetchHitVec.reduce(_ || _)) && (!prefetchHitVec.reduce(_ || _))
+                                         io.prefetch_req.valid && !prefetch_mshrFull && !prefetchHit
         pre_mshrs(i).io.req.bits   := io.prefetch_req.bits
       io.refill_start(i+nMSHRs).valid := pre_mshrs(i).io.req.fire
       io.refill_start(i+nMSHRs).bits := pre_mshrs(i).io.req.bits
@@ -287,7 +289,7 @@ class ICacheMissUnit(edge: TLEdgeOut,refillCycles:Int)(implicit p: Parameters) e
 
 
     //TODO；add pre-fetch
-    io.prefetch_req.ready := !prefetch_mshrFull || fetchHitVec.reduce(_ || _) || prefetchHitVec.reduce(_ || _)
+    io.prefetch_req.ready := !prefetch_mshrFull || prefetchHit
 
 
 

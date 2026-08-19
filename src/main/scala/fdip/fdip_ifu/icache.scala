@@ -361,7 +361,7 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   }.elsewhen(s2_fire){
     s2_has_fetched := false.B
   }
-  .elsewhen(s2_miss && !io.s2_kill && s2_valid){
+  .elsewhen(missunit.io.fetch_req.fire){
     s2_has_fetched := true.B
   }
   missunit.io.fetch_req.valid := s2_miss && !io.s2_kill && s2_valid && !s2_has_fetched && !io.flush && !io.invalidate
