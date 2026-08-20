@@ -51,6 +51,16 @@ class WithNBoomPerfCounters(n: Int) extends Config((site, here, up) => {
   }
 })
 
+/** Enable the commit trace required by Spike cosimulation on FDIP tiles. */
+class WithFDIPBoomTrace extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(
+      core = tp.tileParams.core.copy(trace = true)
+    ))
+    case other => other
+  }
+})
+
 
 class WithSynchronousBoomTiles extends Config((site, here, up) => {
   case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {

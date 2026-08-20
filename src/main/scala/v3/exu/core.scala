@@ -43,6 +43,7 @@ import freechips.rocketchip.devices.tilelink.{PLICConsts, CLINTConsts}
 import boom.v3.common._
 import boom.v3.ifu.{GlobalHistory, HasBoomFrontendParameters}
 import boom.v3.exu.FUConstants._
+import boom.perf._
 import boom.v3.util._
 
 /**
@@ -267,7 +268,15 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
       ("D$ release",  () => io.lsu.perf.release),
       ("ITLB miss",   () => io.ifu.perf.tlbMiss),
       ("DTLB miss",   () => io.lsu.perf.tlbMiss),
-      ("L2 TLB miss", () => io.ptw.perf.l2miss)))))
+      ("L2 TLB miss", () => io.ptw.perf.l2miss))),
+
+    // Reserve FDIP-specific selector slots so the shared benchmark harness
+    // reads deterministic zeroes for features absent from the coupled IFU.
+    new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+      ("I$ prefetch",            () => false.B),
+      ("FTQ full",               () => false.B),
+      ("FTQ metadata conflict",  () => false.B),
+      ("FTQ redirect conflict",  () => false.B)))))
   val csr = Module(new freechips.rocketchip.rocket.CSRFile(perfEvents, boomParams.customCSRs.decls))
   csr.io.inst foreach { c => c := DontCare }
   csr.io.rocc_interrupt := io.rocc.interrupt
@@ -277,6 +286,28 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   custom_csrs.csrs.foreach { c => c.stall := false.B; c.set := false.B; c.sdata := DontCare }
 
   (custom_csrs.csrs zip csr.io.customCSRs).map { case (lhs, rhs) => lhs <> rhs }
+
+  if (p(BoomXSPerfEnableKey)) {
+    val perfCtrl = Wire(new LogPerfIO)
+    perfCtrl.clock := clock
+    perfCtrl.reset := reset.asBool
+
+    XSPerfAccumulate("cycles", 1.U)
+    XSPerfAccumulate("commit_instr", PopCount(rob.io.commit.arch_valids))
+    XSPerfAccumulate("branch_resolved", PopCount(brinfos.map(_.valid)))
+    XSPerfAccumulate("branch_mispredict", b2.mispredict)
+    XSPerfAccumulate("control_flow_target_mispredict", b2.mispredict && b2.cfi_type === CFI_JALR)
+    XSPerfAccumulate("flush", rob.io.flush.valid)
+    XSPerfAccumulate("icache_demand_miss", io.ifu.perf.acquire)
+    XSPerfAccumulate("dcache_miss", io.lsu.perf.acquire)
+    XSPerfAccumulate("dtlb_miss", io.lsu.perf.tlbMiss)
+    XSPerfAccumulate("l2tlb_miss", io.ptw.perf.l2miss)
+    XSPerfAccumulate("icache_prefetch", 0.U)
+    XSPerfAccumulate("ftq_full", 0.U)
+    XSPerfAccumulate("ftq_metadata_conflict", 0.U)
+    XSPerfAccumulate("ftq_redirect_conflict", 0.U)
+    XSLog.collect(perfCtrl)
+  }
 
   //val icache_blocked = !(io.ifu.fetchpacket.valid || RegNext(io.ifu.fetchpacket.valid))
   val icache_blocked = false.B
