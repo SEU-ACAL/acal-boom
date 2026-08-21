@@ -28,8 +28,8 @@ import boom.fdip.exu.{CommitExceptionSignals, BranchDecode, BrUpdateInfo, Branch
 import boom.fdip.util._
 // import boom.fdip.ifu._
 class BranchAttribute extends Bundle {
-  val branchType: UInt = BranchAttribute.BranchType()
-  val rasAction:  UInt = BranchAttribute.RasAction()
+  val branchType: UInt = UInt(2.W)
+  val rasAction:  UInt = UInt(2.W)
 
   def isNone:        Bool = branchType === BranchAttribute.BranchType.None
   def isConditional: Bool = branchType === BranchAttribute.BranchType.Conditional
@@ -57,7 +57,10 @@ class BranchAttribute extends Bundle {
 }
 
 object BranchAttribute {
-  object BranchType extends EnumUInt(4) {
+  object BranchType {
+    private val width = 2
+
+    def apply(): UInt = 0.U(width.W)
     // no branch
     def None: UInt = 0.U(width.W)
     // conditional branches: beq, bne, blt, bge, bltu, bgeu
@@ -66,10 +69,17 @@ object BranchAttribute {
     def Direct: UInt = 2.U(width.W)
     // indirect branches: jr, jalr
     def Indirect: UInt = 3.U(width.W)
+
+    def assertLegal(value: UInt): Unit = {
+      assert(value < 4.U)
+    }
   }
-  object RasAction extends EnumUInt(4) {
+  object RasAction {
+    private val width = 2
     def popBit:  Int = 0
     def pushBit: Int = 1
+
+    def apply(): UInt = 0.U(width.W)
     // no action
     def None: UInt = 0.U(width.W)
     // special indirect branches: return/call, refer to risc-v spec Table3. Return-address stack prediction hints
@@ -81,6 +91,10 @@ object BranchAttribute {
     def PopAndPush: UInt = ((1 << popBit) | (1 << pushBit)).U(width.W)
 
     def apply(pop: Bool, push: Bool): UInt = push ## pop
+
+    def assertLegal(value: UInt): Unit = {
+      assert(value < 4.U)
+    }
   }
   def apply(branchType: UInt, rasAction: UInt, canAssert: Bool = true.B): BranchAttribute = {
     // for some register, we allow X-state on init, so we assert only when canAssert (e.g. stage valid)
@@ -99,7 +113,7 @@ object BranchAttribute {
 
     def isLink(reg: UInt): Bool = reg === 1.U || reg === 5.U
 
-    val branchType = ListLookup(inst, List(BranchType.None), PreDecodeInst.brTable).head
+    val branchType = ListLookup(inst, List(BranchType.None), BranchAttribute.brTable).head
 
     // for jal/jalr, rd=inst(11, 7)
     // for c.jal/jalr, rd is always x1
@@ -132,6 +146,17 @@ object BranchAttribute {
   def ReturnAndCall: BranchAttribute = apply(BranchType.Indirect, RasAction.PopAndPush)
   def OtherDirect:   BranchAttribute = apply(BranchType.Direct, RasAction.None)
   def OtherIndirect: BranchAttribute = apply(BranchType.Indirect, RasAction.None)
+
+  private val brTable = Array(
+    // c.ebreak must take priority over c.jalr/c.jr.
+    BitPat("b????????????????_100_?_00_000_00_000_10") -> List(BranchType.None),
+    BitPat("b????????????????_101_?_??_???_??_???_01") -> List(BranchType.Direct),
+    BitPat("b????????????????_100_?_??_???_00_000_10") -> List(BranchType.Indirect),
+    BitPat("b????????????????_11?_?_??_???_??_???_01") -> List(BranchType.Conditional),
+    BitPat("b????????????????_???_?????_1101111")       -> List(BranchType.Direct),
+    BitPat("b????????????????_000_?????_1100111")       -> List(BranchType.Indirect),
+    BitPat("b????????????????_???_?????_1100011")       -> List(BranchType.Conditional)
+  )
 }
 class FrontendResp(implicit p: Parameters) extends BoomBundle()(p) {
   val pc = UInt(vaddrBitsExtended.W)  // ID stage PC

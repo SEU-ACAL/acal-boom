@@ -621,8 +621,6 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
   predictor.io.update.bits.cfi_idx.valid    := io.fromFtq.bpdupdate.bits.cfi_idx.valid
   predictor.io.update.bits.ghist            := io.fromFtq.bpdupdate.bits.ghist.histories
 
-  XSPerfAccumulate("s3_override",   s3_override)
-  XSPerfAccumulate("s2_override",   s2_override)
   XSPerfAccumulate("f2_correct_f1_ghist",   f2_correct_f1_ghist)
   XSPerfAccumulate("f3_correct_f2_ghist",   f3_correct_f2_ghist)
   XSPerfAccumulate("f3_correct_f1_ghist",   f3_correct_f1_ghist)
