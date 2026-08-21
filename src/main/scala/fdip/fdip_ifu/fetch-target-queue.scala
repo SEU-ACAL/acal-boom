@@ -28,6 +28,7 @@ import boom.fdip.exu._
 import boom.fdip.util._
 import freechips.rocketchip.tilelink.TLMessages.isA
 import os.write.over
+import freechips.rocketchip.regmapper.RRTest0Map.re
 
 /**
  * FTQ Parameters used in configurations
@@ -283,8 +284,9 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
 
 
   val pc_mem        = Reg(Vec(num_entries, new FTQPCBundle))//后端读pc
-  val meta          = Module(new SRAMHelper(num_entries, UInt(bpdMaxMetaLength.W)))//commit update
-  val redirect_mem  = Module(new SRAMHelper(num_entries, new SpecInfoBundle()))//some info needed to redirect:IFU-redirect+backend-redirect+commit
+  val meta          = Reg(Vec(num_entries, UInt(bpdMaxMetaLength.W)))//commit update
+  val redirect_mem  = Reg(Vec(num_entries, new SpecInfoBundle()))//some info needed to redirect:IFU-redirect+backend-redirect+commit
+  
   val pd_mem        = Reg(Vec(num_entries, new FTQBundle))//some info needed to redirect:IFU-redirect+backend-redirect+commit
   
   val cfi_offset    = Reg(Vec(num_entries, Valid(UInt((log2Ceil(fetchWidth)).W))))
@@ -336,21 +338,24 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   dontTouch(bpu_last_stage_meta)
   dontTouch(bpu_last_stage_ghist)
   dontTouch(bpu_last_stage_resp)
-  meta.io.w.wen     := bpu_last_stage_wen
-  meta.io.w.waddr   := ftqMemIdx(bpu_last_stage_ptr)
-  meta.io.w.wdata   := bpu_last_stage_meta
+  // meta.io.w.wen     := bpu_last_stage_wen
+  // meta.io.w.waddr   := ftqMemIdx(bpu_last_stage_ptr)
+  // meta.io.w.wdata   := bpu_last_stage_meta
 
+
+  when(bpu_last_stage_wen){
+    meta(ftqMemIdx(bpu_last_stage_ptr)) := bpu_last_stage_meta
+    val redirect_info = Wire(new SpecInfoBundle())
+    redirect_info.ghist := bpu_last_stage_ghist
+    redirect_info.ras_top := bpu_last_stage_ras_top
+    redirect_mem(ftqMemIdx(bpu_last_stage_ptr)) := redirect_info
+  }
   //默认读优先，但如果重定向的话，写入的一定是无效信息，所以可以禁止写入
   /* 
   这里发生读写冲突，会导致更新BPU晚一个周期，对整体的性能影响有待评估
    */
-  redirect_mem.io.w.wen           := bpu_last_stage_wen//bpu_in_wen&&bpu_in_stage===BP_S3&& !(io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch)
-  redirect_mem.io.w.waddr         := ftqMemIdx(bpu_last_stage_ptr)
-  redirect_mem.io.w.wdata.ghist   := bpu_last_stage_ghist
-  redirect_mem.io.w.wdata.ras_top := bpu_last_stage_ras_top
-
-  io.ftq_redirect_conflict := redirect_mem.io.w.wen && redirect_mem.io.r.req.valid         
-  io.ftq_meta_conflict     := meta.io.w.wen && meta.io.r.req.valid
+  io.ftq_redirect_conflict := false.B         
+  io.ftq_meta_conflict     := false.B
   io.ftq_full              := full
 
 
@@ -435,9 +440,9 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   val bpd_entry             = WireInit(pd_mem(bpd_update_idx))
   val bpd_redirect_entry    = WireInit(pd_mem(bpd_update_idx))
   val bpd_update_pc         = RegNext(pc_mem(bpd_update_idx).start_pc)
-  val bpd_update_ghist      = redirect_mem.io.r.resp.rdata.ghist //需要传入BPU修复后的
-  val bpd_update_ras_top    = redirect_mem.io.r.resp.rdata.ras_top
-  val bpd_update_meta       = meta.io.r.resp.rdata
+  val bpd_update_ghist      = RegNext(redirect_mem(bpd_update_idx).ghist) //需要传入BPU修复后的
+  val bpd_update_ras_top    = RegNext(redirect_mem(bpd_update_idx).ras_top)
+  val bpd_update_meta       = RegNext(meta(ftqMemIdx(commit_ptr)))
   val ifu_redirect_ghist    = WireInit(bpd_update_ghist)
   val backend_redirect_ghist = WireInit(bpd_update_ghist)
   val bpd_update_target     = RegNext(pc_mem(ftqMemIdx(CirWrapInc(bpd_update_ptr))).start_pc)
@@ -447,19 +452,19 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   bpd_update_ptr                     := Mux(io.fromBackend.redirect_val&&io.fromBackend.brupdate.b2.mispredict,
                             io.fromBackend.redirect_ftq_idx,Mux(io.fromIfu.redirect_from_fetch,
                             io.fromIfu.redirect_ftq_idx,commit_ptr))
-  meta.io.r.req.valid                := (commit_ptr=/=deq_ptr)
-  meta.io.r.req.bits.raddr           := ftqMemIdx(commit_ptr)
+  // meta.io.r.req.valid                := (commit_ptr=/=deq_ptr)
+  // meta.io.r.req.bits.raddr           := ftqMemIdx(commit_ptr)
 
   //对于redirect_mem 读的优先级大于写，一般读是为了重定向，此时写入的一定无效
   /* 
   提交时需要去根据ghist来得到更新ctr的idx
   */
-  redirect_mem.io.r.req.bits.raddr   := bpd_update_idx
-  redirect_mem.io.r.req.valid        := io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch||(commit_ptr=/=deq_ptr)
+  // redirect_mem.io.r.req.bits.raddr   := bpd_update_idx
+  // redirect_mem.io.r.req.valid        := io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch||(commit_ptr=/=deq_ptr)
   bpd_update_mispredict              := (io.fromBackend.redirect_val&&io.fromBackend.brupdate.b2.mispredict||io.fromIfu.redirect_from_fetch)
   //必须redirect和meta全部读出来，此时才可以更新
   do_update_commit                   := (!(io.fromBackend.redirect_val&&io.fromBackend.brupdate.b2.mispredict||io.fromIfu.redirect_from_fetch))&&
-                                (commit_ptr=/=deq_ptr)&&redirect_mem.io.r.req.fire&&meta.io.r.req.fire//此时需要commit update
+                                (commit_ptr=/=deq_ptr)&&(io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch||(commit_ptr=/=deq_ptr))
   bpd_update_commit                  := do_update_commit //第二个周期读出update信息，然后送入bpu
 
 
@@ -579,11 +584,13 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   io.toBPU.redirect_ftq_idx                      := RegNext(Mux(io.fromBackend.redirect_val,io.fromBackend.redirect_ftq_idx,io.fromIfu.redirect_ftq_idx))  
   io.toBPU.redirect_pc                           := RegNext(Mux(io.fromBackend.redirect_val,io.fromBackend.redirect_pc,io.fromIfu.redirect_target))  
   io.toBPU.redirect_ghist                        := Mux(RegNext(io.fromBackend.redirect_val),backend_redirect_ghist,ifu_redirect_ghist)
+  
+  //TODO: remove this, we should not repair BTB on IFU redirect
   io.toBPU.redirect_btb_repair                   := RegNext(io.fromIfu.redirect_btb)//只有ifu的重定向才会early修复btb,其他的就是commit更新
   //RAS目前只修复由于call指令导致的错误（一般是未识别导致的）
   io.toBPU.ras_update                            := bpd_update_mispredict && (ras_update_info.cfi_is_call)
-  io.toBPU.ras_update_idx                        := redirect_mem.io.r.resp.rdata.ghist.ras_idx
-  io.toBPU.ras_update_pc                         := redirect_mem.io.r.resp.rdata.ras_top
+  io.toBPU.ras_update_idx                        := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).ghist.ras_idx)
+  io.toBPU.ras_update_pc                         := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).ras_top)
 /* -------------------------------------------------------------------------- */
 /*                                 To Prefetch                                */
 /* -------------------------------------------------------------------------- */
@@ -622,7 +629,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
     io.toBackend.get_ftq_pc(i).next_val  := RegNext((!isFull(next_ptr,bpu_ptr)) || next_is_enq)
     io.toBackend.get_ftq_pc(i).com_pc    := RegNext(pc_mem(ftqMemIdx(Mux(io.fromBackend.deq.valid, io.fromBackend.deq.bits, commit_ptr))).start_pc)
     io.toBackend.get_ftq_pc(i).entry     := RegNext(pd_mem(idx))
-    io.toBackend.get_ftq_pc(i).ghist     := RegNext(redirect_mem.io.r.resp.rdata.ghist)//TODO:fix it
+    io.toBackend.get_ftq_pc(i).ghist     := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).ghist)//TODO:fix it
   }
 
   io.debug_fetch_pc := DontCare

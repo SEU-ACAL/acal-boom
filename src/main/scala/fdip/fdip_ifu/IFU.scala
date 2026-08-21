@@ -37,6 +37,7 @@ class IFUtoIbuf(implicit p: Parameters) extends BoomBundle
 {
   val req = Decoupled(new FetchBundle)
 }
+
 // class IFUtoICache(implicit p: Parameters) extends BoomBundle
 //   with HasBoomFrontendParameters
 // {

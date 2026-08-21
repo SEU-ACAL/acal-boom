@@ -1,7 +1,10 @@
 package boom.perf
 
 import chisel3._
+import chisel3.experimental.StringParam
 import chisel3.util.HasBlackBoxResource
+import chisel3.util.experimental.BoringUtils.tapAndRead
+import chisel3.reflect.DataMirror.isVisible
 import org.chipsalliance.cde.config.{Config, Field, Parameters}
 
 case object BoomXSPerfEnableKey extends Field[Boolean](false)
@@ -9,14 +12,6 @@ case object BoomXSPerfEnableKey extends Field[Boolean](false)
 class LogPerfIO extends Bundle {
   val clock = Clock()
   val reset = Bool()
-}
-
-private object XSPerfNames {
-  val all = Seq(
-    "cycles", "commit_instr", "branch_resolved", "branch_mispredict",
-    "control_flow_target_mispredict", "flush", "icache_demand_miss",
-    "dcache_miss", "dtlb_miss", "l2tlb_miss", "icache_prefetch",
-    "ftq_full", "ftq_metadata_conflict", "ftq_redirect_conflict")
 }
 
 object XSLog {
@@ -31,7 +26,7 @@ object XSPerfAccumulate {
   private val perfInfos = scala.collection.mutable.ListBuffer.empty[(String, UInt)]
 
   def apply(perfName: String, perfCnt: UInt)(implicit p: Parameters): Unit = {
-    require(XSPerfNames.all.contains(perfName), s"unknown BOOM xsperf name: $perfName")
+    require(perfName.matches("\\w+"), s"invalid BOOM xsperf name: $perfName")
     if (p(BoomXSPerfEnableKey)) {
       if (perfInfos.isEmpty) XSLog.registerCaller(collect)
       perfInfos += ((perfName, perfCnt))
@@ -39,26 +34,29 @@ object XSPerfAccumulate {
   }
 
   private def collect(ctrl: LogPerfIO)(implicit p: Parameters): Unit = {
-    val counters = XSPerfNames.all.map { name =>
-      val source = perfInfos.find(_._1 == name).map(_._2).getOrElse(0.U)
-      val counter = RegInit(0.U(64.W)).suggestName(s"${name}_xsperf_counter")
+    perfInfos.zipWithIndex.foreach { case ((name, sourceBore), index) =>
+      // Collection happens at the core-level endpoint, while callers may live
+      // in any BOOM submodule. Preserve XiangShan's deferred cross-module read.
+      val source = if (isVisible(sourceBore)) sourceBore else tapAndRead(sourceBore)
+      val counter = RegInit(0.U(64.W)).suggestName(s"${name}_xsperf_counter_$index")
       val next = counter + source
       counter := next
-      next
-    }
 
-    val endpoint = Module(new XSPerfEndpoint)
-    endpoint.io.clock := ctrl.clock
-    endpoint.io.reset := ctrl.reset
-    endpoint.io.values.zip(counters).foreach { case (out, value) => out := value }
+      val endpoint = Module(new XSPerfEndpoint(name)).suggestName(s"${name}_xsperf_endpoint_$index")
+      endpoint.io.clock := ctrl.clock
+      endpoint.io.reset := ctrl.reset
+      endpoint.io.value := next
+    }
   }
 }
 
-class XSPerfEndpoint extends BlackBox with HasBlackBoxResource {
+class XSPerfEndpoint(perfName: String) extends BlackBox(Map(
+  "PERF_NAME" -> StringParam(perfName)
+)) with HasBlackBoxResource {
   val io = IO(new Bundle {
     val clock = Input(Clock())
     val reset = Input(Bool())
-    val values = Input(Vec(XSPerfNames.all.size, UInt(64.W)))
+    val value = Input(UInt(64.W))
   })
   addResource("/boom-perf/XSPerfEndpoint.v")
 }
