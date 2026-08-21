@@ -9,7 +9,7 @@ import freechips.rocketchip.tilelink._
 
 import boom.fdip.common._
 import boom.fdip.util._
-
+import boom.perf._
 import boom.fdip.ifu._
 import java.lang
 
@@ -287,6 +287,55 @@ abstract class AbstractBranchPredictor(implicit p: Parameters) extends BoomModul
   val s1_update_valid = RegNext(s0_update_valid)
 }
 
+/**
+  * Fixed FDIP predictor topology. The response path is intentionally explicit:
+  * FAMicroBTB -> BIM -> BTB -> TAGE.
+  *
+  * Meta is packed in the same order used by the former Composer:
+  * TAGE | BTB | FAMicroBTB | BIM.
+  */
+class FixedTageBranchPredictor(implicit p: Parameters) extends AbstractBranchPredictor()(p) {
+  private val microBtb = Module(new FAMicroBTBBranchPredictor())
+  private val bim      = Module(new BIMBranchPredictor())
+  private val btb      = Module(new BTBBranchPredictor())
+  private val tage     = Module(new TageBranchPredictor())
+  private val components = Seq(tage, btb, microBtb, bim)
+
+  val mems = components.flatMap(_.mems)
+
+  for (component <- components) {
+    component.io.f0_valid := io.f0_valid
+    component.io.f0_pc    := io.f0_pc
+    component.io.f0_mask  := io.f0_mask
+    component.io.f1_ghist := io.f1_ghist
+    component.io.f1_lhist := io.f1_lhist
+    component.io.f3_fire  := io.f3_fire
+  }
+
+  // Keep the predictor response chain visible at the point where it is defined.
+  microBtb.io.resp_in(0) := io.resp_in(0)
+  bim.io.resp_in(0)      := microBtb.io.resp
+  btb.io.resp_in(0)      := bim.io.resp
+  tage.io.resp_in(0)     := btb.io.resp
+  io.resp                := tage.io.resp
+
+  var packedMeta = 0.U(1.W)
+  var metaWidth  = 0
+  for (component <- components) {
+    packedMeta = (packedMeta << component.metaSz) | component.io.f3_meta(component.metaSz - 1, 0)
+    metaWidth += component.metaSz
+  }
+  require(metaWidth <= bpdMaxMetaLength)
+  io.f3_meta := packedMeta
+
+  var updateMeta = io.update.bits.meta
+  for (component <- components.reverse) {
+    component.io.update := io.update
+    component.io.update.bits.meta := updateMeta
+    updateMeta = updateMeta >> component.metaSz
+  }
+}
+
 
 /* 
 负责next pc和ghist维护
@@ -318,7 +367,7 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
     // val update = Input(Valid(new BranchPredictionUpdate))
   })
 
-  val predictor =  Module(if (useBPD) new ComposedBranchPredictor else new NullBranchPredictor)
+  val predictor =  Module(if (useBPD) new FixedTageBranchPredictor else new NullBranchPredictor)
   //TODO: BTB need to record call or ret so that we can use RAS and predict update
   val ras               = Module(new BoomRAS)
 //如果ftq没有空间，那么s1阶段会一直保持这个pc，并且持续预测（或者使用fire发送预测请求？）

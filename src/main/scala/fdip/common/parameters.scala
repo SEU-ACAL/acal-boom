@@ -60,12 +60,10 @@ case class BoomCoreParams(
 
   /* branch prediction */
   enableBranchPrediction: Boolean = true,
-  branchPredictor: Function2[boom.fdip.ifu.BranchPredictorResponse, Parameters, Tuple2[Seq[boom.fdip.ifu.AbstractBranchPredictor], boom.fdip.ifu.BranchPredictorResponse]] = ((resp_in: boom.fdip.ifu.BranchPredictorResponse, p: Parameters) => (Nil, resp_in)),
-  FDIPbranchPredictor: Function2[boom.fdip.ifu.BranchPredictorResponse, Parameters, Tuple2[Seq[boom.fdip.ifu.AbstractBranchPredictor], boom.fdip.ifu.BranchPredictorResponse]] = ((resp_in: boom.fdip.ifu.BranchPredictorResponse, p: Parameters) => (Nil, resp_in)),
   globalHistoryLength: Int = 64,
   localHistoryLength: Int = 32,
   localHistoryNSets: Int = 128,
-  bpdMaxMetaLength: Int = 120,
+  bpdMaxMetaLength: Int = 150,
   numRasEntries: Int = 32,
   enableRasTopRepair: Boolean = true,
 
@@ -249,12 +247,6 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val localHistoryNSets   = boomParams.localHistoryNSets
   val bpdMaxMetaLength    = boomParams.bpdMaxMetaLength
 
-  def getBPDComponents(resp_in: boom.fdip.ifu.BranchPredictorResponse, p: Parameters) = {
-    boomParams.branchPredictor(resp_in, p)
-  }
-  def getFDIPBPDComponents(resp_in: boom.fdip.ifu.BranchPredictorResponse, p: Parameters) = {
-    boomParams.FDIPbranchPredictor(resp_in, p)
-  }
   val nRasEntries = boomParams.numRasEntries max 2
   val useRAS = boomParams.numRasEntries > 0
   val enableRasTopRepair = boomParams.enableRasTopRepair
