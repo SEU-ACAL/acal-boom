@@ -45,12 +45,7 @@ class FAMicroBTBBranchPredictor(params: BoomFAMicroBTBParams = BoomFAMicroBTBPar
     val ctr   = UInt(2.W)
   }
 
-  class MicroBTBPredictMeta extends Bundle {
-    val hits  = Vec(predWidth, Bool())
-    val write_way = UInt(log2Ceil(nWays).W)
-  }
-
-  val s1_meta = Wire(new MicroBTBPredictMeta)
+  val s1_meta = Wire(new FAMicroBTBPredictMeta(nWays))
   override val metaSz = s1_meta.asUInt.getWidth
 
 
@@ -110,7 +105,7 @@ class FAMicroBTBBranchPredictor(params: BoomFAMicroBTBParams = BoomFAMicroBTBPar
   io.f3_meta := RegNext(RegNext(s1_meta.asUInt))
 
   val s1_update_cfi_idx = s1_update.bits.cfi_idx.bits
-  val s1_update_meta    = s1_update.bits.meta.asTypeOf(new MicroBTBPredictMeta)
+  val s1_update_meta    = s1_update.bits.meta.asTypeOf(new FAMicroBTBPredictMeta(nWays))
   val s1_update_write_way = s1_update_meta.write_way
 
   val max_offset_value = (~(0.U)((offsetSz-1).W)).asSInt
@@ -149,4 +144,3 @@ class FAMicroBTBBranchPredictor(params: BoomFAMicroBTBParams = BoomFAMicroBTBPar
   }
 
 }
-

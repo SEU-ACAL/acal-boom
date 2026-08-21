@@ -200,16 +200,7 @@ class TageBranchPredictor(params: BoomTageParams = BoomTageParams())(implicit p:
   val tageUBitPeriod = params.uBitPeriod
   val tageNTables    = params.tableInfo.size
 
-  class TageMeta extends Bundle
-  {
-    val provider      = Vec(predWidth, Valid(UInt(log2Ceil(tageNTables).W)))
-    val alt_differs   = Vec(predWidth, Output(Bool()))
-    val provider_u    = Vec(predWidth, Output(UInt(2.W)))
-    val provider_ctr  = Vec(predWidth, Output(UInt(3.W)))
-    val allocate      = Vec(predWidth, Valid(UInt(log2Ceil(tageNTables).W)))
-  }
-
-  val f3_meta = Wire(new TageMeta)
+  val f3_meta = Wire(new TagePredictMeta(tageNTables))
   override val metaSz = f3_meta.asUInt.getWidth
   require(metaSz <= bpdMaxMetaLength)
 
@@ -233,7 +224,7 @@ class TageBranchPredictor(params: BoomTageParams = BoomTageParams())(implicit p:
 
   val f3_resps = VecInit(tables.map(_.io.f3_resp))
 
-  val s1_update_meta = s1_update.bits.meta.asTypeOf(new TageMeta)
+  val s1_update_meta = s1_update.bits.meta.asTypeOf(new TagePredictMeta(tageNTables))
   val s1_update_mispredict_mask = UIntToOH(s1_update.bits.cfi_idx.bits) &
     Fill(predWidth, s1_update.bits.cfi_mispredicted)
 

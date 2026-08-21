@@ -284,7 +284,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
 
 
   val pc_mem        = Reg(Vec(num_entries, new FTQPCBundle))//后端读pc
-  val meta          = Reg(Vec(num_entries, UInt(bpdMaxMetaLength.W)))//commit update
+  val meta          = Reg(Vec(num_entries, new BranchPredictionMeta))//commit update
   val redirect_mem  = Reg(Vec(num_entries, new SpecInfoBundle()))//some info needed to redirect:IFU-redirect+backend-redirect+commit
   
   val pd_mem        = Reg(Vec(num_entries, new FTQBundle))//some info needed to redirect:IFU-redirect+backend-redirect+commit

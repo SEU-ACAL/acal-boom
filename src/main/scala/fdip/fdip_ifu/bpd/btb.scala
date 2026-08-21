@@ -45,11 +45,7 @@ class BTBBranchPredictor(params: BoomBTBParams = BoomBTBParams())(implicit p: Pa
   }
   val btbMetaSz = tagSz + 1
 
-  class BTBPredictMeta extends Bundle {
-    val write_way = UInt(log2Ceil(nWays).W)
-  }
-
-  val s1_meta = Wire(new BTBPredictMeta)
+  val s1_meta = Wire(new BTBPredictMeta(nWays))
   val f3_meta = RegNext(RegNext(s1_meta))
 
 
@@ -139,7 +135,7 @@ class BTBBranchPredictor(params: BoomBTBParams = BoomBTBParams())(implicit p: Pa
     alloc_way)
 
   val s1_update_cfi_idx = s1_update.bits.cfi_idx.bits
-  val s1_update_meta    = s1_update.bits.meta.asTypeOf(new BTBPredictMeta)
+  val s1_update_meta    = s1_update.bits.meta.asTypeOf(new BTBPredictMeta(nWays))
 
   val max_offset_value = Cat(0.B, ~(0.U((offsetSz-1).W))).asSInt
   val min_offset_value = Cat(1.B,  (0.U((offsetSz-1).W))).asSInt
@@ -200,4 +196,3 @@ class BTBBranchPredictor(params: BoomBTBParams = BoomBTBParams())(implicit p: Pa
   }
 
 }
-
