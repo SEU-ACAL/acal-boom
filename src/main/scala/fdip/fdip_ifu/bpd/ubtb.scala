@@ -16,10 +16,10 @@ case class BoomMicroBTBParams(
 )
 
 
-class MicroBTBBranchPredictorBank(params: BoomMicroBTBParams)(implicit p: Parameters) extends AbstractBranchPredictor()(p)
+class MicroBTBBranchPredictor(params: BoomMicroBTBParams)(implicit p: Parameters) extends AbstractBranchPredictor()(p)
 {
   override val nSets         = params.nSets
-  val tagSz         = vaddrBitsExtended - log2Ceil(nSets) - log2Ceil(fetchWidth) - 1
+  val tagSz         = vaddrBitsExtended - log2Ceil(nSets) - log2Ceil(predWidth) - 1
   val offsetSz      = params.offsetSz
   val nWrBypassEntries = 2
 
@@ -46,7 +46,7 @@ class MicroBTBBranchPredictorBank(params: BoomMicroBTBParams)(implicit p: Parame
   val btbMetaSz = tagSz + 1 + 2
 
   class MicroBTBPredictMeta extends Bundle {
-    val ctrs  = Vec(bankWidth, UInt(2.W))
+    val ctrs  = Vec(predWidth, UInt(2.W))
   }
 
   val s1_meta = Wire(new MicroBTBPredictMeta)
@@ -57,23 +57,23 @@ class MicroBTBBranchPredictorBank(params: BoomMicroBTBParams)(implicit p: Parame
   reset_idx := reset_idx + doing_reset
   when (reset_idx === (nSets-1).U) { doing_reset := false.B }
 
-  val meta     = SyncReadMem(nSets, Vec(bankWidth, UInt(btbMetaSz.W)))
-  val btb      = SyncReadMem(nSets, Vec(bankWidth, UInt(btbEntrySz.W)))
+  val meta     = SyncReadMem(nSets, Vec(predWidth, UInt(btbMetaSz.W)))
+  val btb      = SyncReadMem(nSets, Vec(predWidth, UInt(btbEntrySz.W)))
 
-  val mems = Seq(("ubtb_meta", nSets, bankWidth * btbMetaSz),
-                 ("ubtb_data", nSets, bankWidth * btbEntrySz))
+  val mems = Seq(("ubtb_meta", nSets, predWidth * btbMetaSz),
+                 ("ubtb_data", nSets, predWidth * btbEntrySz))
 
   val s1_req_rbtb  = VecInit(btb.read(s0_idx , s0_valid).map(_.asTypeOf(new MicroBTBEntry)))
   val s1_req_rmeta = VecInit(meta.read(s0_idx, s0_valid).map(_.asTypeOf(new MicroBTBMeta)))
   val s1_req_tag   = s1_idx >> log2Ceil(nSets)
 
 
-  val s1_resp   = Wire(Vec(bankWidth, Valid(UInt(vaddrBitsExtended.W))))
-  val s1_taken  = Wire(Vec(bankWidth, Bool()))
-  val s1_is_br  = Wire(Vec(bankWidth, Bool()))
-  val s1_is_jal = Wire(Vec(bankWidth, Bool()))
+  val s1_resp   = Wire(Vec(predWidth, Valid(UInt(vaddrBitsExtended.W))))
+  val s1_taken  = Wire(Vec(predWidth, Bool()))
+  val s1_is_br  = Wire(Vec(predWidth, Bool()))
+  val s1_is_jal = Wire(Vec(predWidth, Bool()))
 
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     s1_resp(w).valid := !doing_reset && s1_valid && s1_req_tag(tagSz-1,0) === s1_req_rmeta(w).tag
     s1_resp(w).bits  := (s1_pc.asSInt + (w << 1).S + s1_req_rbtb(w).offset).asUInt
     s1_is_br(w)  := !doing_reset && s1_resp(w).valid &&  s1_req_rmeta(w).is_br
@@ -82,7 +82,7 @@ class MicroBTBBranchPredictorBank(params: BoomMicroBTBParams)(implicit p: Parame
     s1_meta.ctrs(w) := s1_req_rmeta(w).ctr
   }
 
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     io.resp.f1(w).predicted_pc := s1_resp(w)
     io.resp.f1(w).is_br        := s1_is_br(w)
     io.resp.f1(w).is_jal       := s1_is_jal(w)
@@ -97,7 +97,7 @@ class MicroBTBBranchPredictorBank(params: BoomMicroBTBParams)(implicit p: Parame
   val s1_update_meta    = s1_update.bits.meta.asTypeOf(new MicroBTBPredictMeta)
 
   val wrbypass_idxs    = Reg(Vec(nWrBypassEntries, UInt(log2Ceil(nSets).W)))
-  val wrbypass         = Reg(Vec(nWrBypassEntries, Vec(bankWidth, new MicroBTBMeta)))
+  val wrbypass         = Reg(Vec(nWrBypassEntries, Vec(predWidth, new MicroBTBMeta)))
   val wrbypass_enq_idx = RegInit(0.U(log2Ceil(nWrBypassEntries).W))
 
   val wrbypass_hits = VecInit((0 until nWrBypassEntries) map { i =>
@@ -115,12 +115,12 @@ class MicroBTBBranchPredictorBank(params: BoomMicroBTBParams)(implicit p: Parame
   val s1_update_wbtb_data     = Wire(new MicroBTBEntry)
   s1_update_wbtb_data.offset := new_offset_value
   val s1_update_wbtb_mask = (UIntToOH(s1_update_cfi_idx) &
-    Fill(bankWidth, s1_update.bits.cfi_idx.valid && s1_update.valid && s1_update.bits.cfi_taken && s1_update.bits.is_commit_update))
+    Fill(predWidth, s1_update.bits.cfi_idx.valid && s1_update.valid && s1_update.bits.cfi_taken && s1_update.bits.is_commit_update))
 
   val s1_update_wmeta_mask = ((s1_update_wbtb_mask | s1_update.bits.br_mask) &
-    Fill(bankWidth, s1_update.valid && s1_update.bits.is_commit_update))
-  val s1_update_wmeta_data = Wire(Vec(bankWidth, new MicroBTBMeta))
-  for (w <- 0 until bankWidth) {
+    Fill(predWidth, s1_update.valid && s1_update.bits.is_commit_update))
+  val s1_update_wmeta_data = Wire(Vec(predWidth, new MicroBTBMeta))
+  for (w <- 0 until predWidth) {
     s1_update_wmeta_data(w).tag     := s1_update_idx >> log2Ceil(nSets)
     s1_update_wmeta_data(w).is_br   := s1_update.bits.br_mask(w)
 
@@ -139,10 +139,10 @@ class MicroBTBBranchPredictorBank(params: BoomMicroBTBParams)(implicit p: Parame
       reset_idx,
       s1_update_idx),
     Mux(doing_reset,
-      VecInit(Seq.fill(bankWidth) { 0.U(btbEntrySz.W) }),
-      VecInit(Seq.fill(bankWidth) { s1_update_wbtb_data.asUInt })),
+      VecInit(Seq.fill(predWidth) { 0.U(btbEntrySz.W) }),
+      VecInit(Seq.fill(predWidth) { s1_update_wbtb_data.asUInt })),
     Mux(doing_reset,
-      (~(0.U(bankWidth.W))),
+      (~(0.U(predWidth.W))),
       s1_update_wbtb_mask).asBools
   )
   meta.write(
@@ -150,10 +150,10 @@ class MicroBTBBranchPredictorBank(params: BoomMicroBTBParams)(implicit p: Parame
       reset_idx,
       s1_update_idx),
     Mux(doing_reset,
-      VecInit(Seq.fill(bankWidth) { 0.U(btbMetaSz.W) }),
+      VecInit(Seq.fill(predWidth) { 0.U(btbMetaSz.W) }),
       VecInit(s1_update_wmeta_data.map(_.asUInt))),
     Mux(doing_reset,
-      (~(0.U(bankWidth.W))),
+      (~(0.U(predWidth.W))),
       s1_update_wmeta_mask).asBools
   )
 

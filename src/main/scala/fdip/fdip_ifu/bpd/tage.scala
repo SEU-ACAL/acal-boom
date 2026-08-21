@@ -33,18 +33,18 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
     val f1_req_pc    = Input(UInt(vaddrBitsExtended.W))
     val f1_req_ghist = Input(UInt(globalHistoryLength.W))
 
-    val f3_resp = Output(Vec(bankWidth, Valid(new TageResp)))
+    val f3_resp = Output(Vec(predWidth, Valid(new TageResp)))
 
-    val update_mask    = Input(Vec(bankWidth, Bool()))
-    val update_taken   = Input(Vec(bankWidth, Bool()))
-    val update_alloc   = Input(Vec(bankWidth, Bool()))
-    val update_old_ctr = Input(Vec(bankWidth, UInt(3.W)))
+    val update_mask    = Input(Vec(predWidth, Bool()))
+    val update_taken   = Input(Vec(predWidth, Bool()))
+    val update_alloc   = Input(Vec(predWidth, Bool()))
+    val update_old_ctr = Input(Vec(predWidth, UInt(3.W)))
 
     val update_pc    = Input(UInt())
     val update_hist  = Input(UInt())
 
-    val update_u_mask = Input(Vec(bankWidth, Bool()))
-    val update_u = Input(Vec(bankWidth, UInt(2.W)))
+    val update_u_mask = Input(Vec(predWidth, Bool()))
+    val update_u = Input(Vec(predWidth, UInt(2.W)))
   })
 
   def compute_folded_hist(hist: UInt, l: Int) = {
@@ -86,11 +86,11 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
 
   val (s1_hashed_idx, s1_tag) = compute_tag_and_hash(fetchIdx(io.f1_req_pc), io.f1_req_ghist)
 
-  val hi_us  = SyncReadMem(nRows, Vec(bankWidth, Bool()))
-  val lo_us  = SyncReadMem(nRows, Vec(bankWidth, Bool()))
-  val table  = SyncReadMem(nRows, Vec(bankWidth, UInt(tageEntrySz.W)))
+  val hi_us  = SyncReadMem(nRows, Vec(predWidth, Bool()))
+  val lo_us  = SyncReadMem(nRows, Vec(predWidth, Bool()))
+  val table  = SyncReadMem(nRows, Vec(predWidth, UInt(tageEntrySz.W)))
 
-  val mems = Seq((f"tage_l$histLength", nRows, bankWidth * tageEntrySz))
+  val mems = Seq((f"tage_l$histLength", nRows, predWidth * tageEntrySz))
 
   val s2_tag       = RegNext(s1_tag)
 
@@ -99,7 +99,7 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
   val s2_req_rlous = lo_us.read(s1_hashed_idx, io.f1_req_valid)
   val s2_req_rhits = VecInit(s2_req_rtage.map(e => e.valid && e.tag === s2_tag && !doing_reset))
 
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     // This bit indicates the TAGE table matched here
     io.f3_resp(w).valid    := RegNext(s2_req_rhits(w))
     io.f3_resp(w).bits.u   := RegNext(Cat(s2_req_rhius(w), s2_req_rlous(w)))
@@ -116,31 +116,31 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
 
   val (update_idx, update_tag) = compute_tag_and_hash(fetchIdx(io.update_pc), io.update_hist)
 
-  val update_wdata = Wire(Vec(bankWidth, new TageEntry))
+  val update_wdata = Wire(Vec(predWidth, new TageEntry))
 
   table.write(
     Mux(doing_reset, reset_idx                                          , update_idx),
-    Mux(doing_reset, VecInit(Seq.fill(bankWidth) { 0.U(tageEntrySz.W) }), VecInit(update_wdata.map(_.asUInt))),
-    Mux(doing_reset, ~(0.U(bankWidth.W))                                , io.update_mask.asUInt).asBools
+    Mux(doing_reset, VecInit(Seq.fill(predWidth) { 0.U(tageEntrySz.W) }), VecInit(update_wdata.map(_.asUInt))),
+    Mux(doing_reset, ~(0.U(predWidth.W))                                , io.update_mask.asUInt).asBools
   )
 
-  val update_hi_wdata = Wire(Vec(bankWidth, Bool()))
+  val update_hi_wdata = Wire(Vec(predWidth, Bool()))
   hi_us.write(
     Mux(doing_reset, reset_idx, Mux(doing_clear_u_hi, clear_u_idx, update_idx)),
-    Mux(doing_reset || doing_clear_u_hi, VecInit((0.U(bankWidth.W)).asBools), update_hi_wdata),
-    Mux(doing_reset || doing_clear_u_hi, ~(0.U(bankWidth.W)), io.update_u_mask.asUInt).asBools
+    Mux(doing_reset || doing_clear_u_hi, VecInit((0.U(predWidth.W)).asBools), update_hi_wdata),
+    Mux(doing_reset || doing_clear_u_hi, ~(0.U(predWidth.W)), io.update_u_mask.asUInt).asBools
   )
 
-  val update_lo_wdata = Wire(Vec(bankWidth, Bool()))
+  val update_lo_wdata = Wire(Vec(predWidth, Bool()))
   lo_us.write(
     Mux(doing_reset, reset_idx, Mux(doing_clear_u_lo, clear_u_idx, update_idx)),
-    Mux(doing_reset || doing_clear_u_lo, VecInit((0.U(bankWidth.W)).asBools), update_lo_wdata),
-    Mux(doing_reset || doing_clear_u_lo, ~(0.U(bankWidth.W)), io.update_u_mask.asUInt).asBools
+    Mux(doing_reset || doing_clear_u_lo, VecInit((0.U(predWidth.W)).asBools), update_lo_wdata),
+    Mux(doing_reset || doing_clear_u_lo, ~(0.U(predWidth.W)), io.update_u_mask.asUInt).asBools
   )
 
   val wrbypass_tags    = Reg(Vec(nWrBypassEntries, UInt(tagSz.W)))
   val wrbypass_idxs    = Reg(Vec(nWrBypassEntries, UInt(log2Ceil(nRows).W)))
-  val wrbypass         = Reg(Vec(nWrBypassEntries, Vec(bankWidth, UInt(3.W))))
+  val wrbypass         = Reg(Vec(nWrBypassEntries, Vec(predWidth, UInt(3.W))))
   val wrbypass_enq_idx = RegInit(0.U(log2Ceil(nWrBypassEntries).W))
 
   val wrbypass_hits    = VecInit((0 until nWrBypassEntries) map { i =>
@@ -151,7 +151,7 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
   val wrbypass_hit     = wrbypass_hits.reduce(_||_)
   val wrbypass_hit_idx = PriorityEncoder(wrbypass_hits)
 
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     update_wdata(w).ctr   := Mux(io.update_alloc(w),
       Mux(io.update_taken(w), 4.U,
                               3.U
@@ -195,18 +195,18 @@ case class BoomTageParams(
 )
 
 
-class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implicit p: Parameters) extends AbstractBranchPredictor()(p)
+class TageBranchPredictor(params: BoomTageParams = BoomTageParams())(implicit p: Parameters) extends AbstractBranchPredictor()(p)
 {
   val tageUBitPeriod = params.uBitPeriod
   val tageNTables    = params.tableInfo.size
 
   class TageMeta extends Bundle
   {
-    val provider      = Vec(bankWidth, Valid(UInt(log2Ceil(tageNTables).W)))
-    val alt_differs   = Vec(bankWidth, Output(Bool()))
-    val provider_u    = Vec(bankWidth, Output(UInt(2.W)))
-    val provider_ctr  = Vec(bankWidth, Output(UInt(3.W)))
-    val allocate      = Vec(bankWidth, Valid(UInt(log2Ceil(tageNTables).W)))
+    val provider      = Vec(predWidth, Valid(UInt(log2Ceil(tageNTables).W)))
+    val alt_differs   = Vec(predWidth, Output(Bool()))
+    val provider_u    = Vec(predWidth, Output(UInt(2.W)))
+    val provider_ctr  = Vec(predWidth, Output(UInt(3.W)))
+    val allocate      = Vec(predWidth, Valid(UInt(log2Ceil(tageNTables).W)))
   }
 
   val f3_meta = Wire(new TageMeta)
@@ -235,15 +235,15 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
 
   val s1_update_meta = s1_update.bits.meta.asTypeOf(new TageMeta)
   val s1_update_mispredict_mask = UIntToOH(s1_update.bits.cfi_idx.bits) &
-    Fill(bankWidth, s1_update.bits.cfi_mispredicted)
+    Fill(predWidth, s1_update.bits.cfi_mispredicted)
 
-  val s1_update_mask  = WireInit((0.U).asTypeOf(Vec(tageNTables, Vec(bankWidth, Bool()))))
-  val s1_update_u_mask  = WireInit((0.U).asTypeOf(Vec(tageNTables, Vec(bankWidth, UInt(1.W)))))
+  val s1_update_mask  = WireInit((0.U).asTypeOf(Vec(tageNTables, Vec(predWidth, Bool()))))
+  val s1_update_u_mask  = WireInit((0.U).asTypeOf(Vec(tageNTables, Vec(predWidth, UInt(1.W)))))
 
-  val s1_update_taken   = Wire(Vec(tageNTables, Vec(bankWidth, Bool())))
-  val s1_update_old_ctr = Wire(Vec(tageNTables, Vec(bankWidth, UInt(3.W))))
-  val s1_update_alloc   = Wire(Vec(tageNTables, Vec(bankWidth, Bool())))
-  val s1_update_u       = Wire(Vec(tageNTables, Vec(bankWidth, UInt(2.W))))
+  val s1_update_taken   = Wire(Vec(tageNTables, Vec(predWidth, Bool())))
+  val s1_update_old_ctr = Wire(Vec(tageNTables, Vec(predWidth, UInt(3.W))))
+  val s1_update_alloc   = Wire(Vec(tageNTables, Vec(predWidth, Bool())))
+  val s1_update_u       = Wire(Vec(tageNTables, Vec(predWidth, UInt(2.W))))
 
   s1_update_taken   := DontCare
   s1_update_old_ctr := DontCare
@@ -251,7 +251,7 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
   s1_update_u       := DontCare
 
 
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     var altpred = io.resp_in(0).f3(w).taken
     val final_altpred = WireInit(io.resp_in(0).f3(w).taken)
     var provided = false.B
@@ -341,7 +341,7 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
 
 
   for (i <- 0 until tageNTables) {
-    for (w <- 0 until bankWidth) {
+    for (w <- 0 until predWidth) {
       tables(i).io.update_mask(w)    := RegNext(s1_update_mask(i)(w))
       tables(i).io.update_taken(w)   := RegNext(s1_update_taken(i)(w))
       tables(i).io.update_alloc(w)   := RegNext(s1_update_alloc(i)(w))

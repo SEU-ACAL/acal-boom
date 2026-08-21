@@ -49,7 +49,7 @@ class FTQBundle(implicit p: Parameters) extends BoomBundle
   // // TODO compress out high-order bits
   // val fetch_pc  = UInt(vaddrBitsExtended.W)
   // IDX of instruction that was predicted taken, if any
-  val cfi_idx   = Valid(UInt(log2Ceil(fetchWidth).W))
+  val cfi_idx   = Valid(UInt(log2Ceil(predWidth).W))
   // Was the CFI in this bundle found to be taken? or not
   val cfi_taken = Bool()
   // Was this CFI mispredicted by the branch prediction pipeline?
@@ -57,7 +57,7 @@ class FTQBundle(implicit p: Parameters) extends BoomBundle
   // What type of CFI was taken out of this bundle
   val cfi_type = UInt(CFI_SZ.W)
   // mask of branches which were visible in this fetch bundle
-  val br_mask   = UInt(fetchWidth.W)
+  val br_mask   = UInt(predWidth.W)
   // This CFI is likely a CALL
   val cfi_is_call   = Bool()
   // This CFI is likely a RET
@@ -289,7 +289,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   
   val pd_mem        = Reg(Vec(num_entries, new FTQBundle))//some info needed to redirect:IFU-redirect+backend-redirect+commit
   
-  val cfi_offset    = Reg(Vec(num_entries, Valid(UInt((log2Ceil(fetchWidth)).W))))
+  val cfi_offset    = Reg(Vec(num_entries, Valid(UInt((log2Ceil(predWidth)).W))))
   // val ghist         = Seq.fill(2) { SRAMHelper(num_entries, new GlobalHistory) }
 
   //目前对这些指针的管理仍然高度依赖于位置，位置越靠前，优先级越低，之后考虑直接使用mux来做选择
@@ -535,7 +535,9 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   io.toBPU.bpdupdate:=DontCare
   val cfi_idx = bpd_update_entry.cfi_idx.bits
   io.toBPU.bpdupdate.valid                     := bpd_update_commit && (bpd_update_entry.cfi_idx.valid || bpd_update_entry.br_mask =/= 0.U)
+  //TODO: add repair update
   io.toBPU.bpdupdate.bits.is_mispredict_update := !bpd_update_commit
+
   io.toBPU.bpdupdate.bits.is_repair_update     := false.B
   io.toBPU.bpdupdate.bits.pc                   := bpd_update_pc
   io.toBPU.bpdupdate.bits.btb_mispredicts      := 0.U

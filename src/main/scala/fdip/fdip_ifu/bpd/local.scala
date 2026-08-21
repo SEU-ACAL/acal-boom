@@ -11,7 +11,7 @@ import boom.fdip.common._
 import boom.fdip.util.{BoomCoreStringPrefix}
 
 
-abstract class AbstractLocalBranchPredictorBank(implicit p: Parameters) extends BoomModule()(p)
+abstract class AbstractLocalBranchPredictor(implicit p: Parameters) extends BoomModule()(p)
   with HasBoomFrontendParameters
 {
   val io = IO(new Bundle {
@@ -35,13 +35,13 @@ abstract class AbstractLocalBranchPredictorBank(implicit p: Parameters) extends 
   })
 }
 
-class NullLocalBranchPredictorBank(implicit p: Parameters) extends AbstractLocalBranchPredictorBank
+class NullLocalBranchPredictor(implicit p: Parameters) extends AbstractLocalBranchPredictor
 {
   io.f1_lhist := 0.U
   io.f3_lhist := 0.U
 }
 
-class LocalBranchPredictorBank(implicit p: Parameters) extends AbstractLocalBranchPredictorBank
+class LocalBranchPredictor(implicit p: Parameters) extends AbstractLocalBranchPredictor
 {
   override val nSets = localHistoryNSets
 

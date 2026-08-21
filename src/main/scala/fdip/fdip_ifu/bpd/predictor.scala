@@ -46,12 +46,12 @@ class BranchPredictionLiteBundle(implicit p: Parameters) extends BoomBundle()(p)
   val hasRedirect = Bool()
   val ftq_idx = UInt((log2Ceil(ftqSz)+1).W)
   val ghist   = new GlobalHistory
-  val preds   = Vec(fetchWidth, new BranchPrediction)
+  val preds   = Vec(predWidth, new BranchPrediction)
   val meta    = Output(UInt(bpdMaxMetaLength.W))
   val lhist   = Output(UInt(localHistoryLength.W))
   
   def predTakenVec = {
-    val taken_vec = WireInit(VecInit((0 until fetchWidth) map { i =>
+    val taken_vec = WireInit(VecInit((0 until predWidth) map { i =>
       valid && fetchMask(pc)(i) && preds(i).predicted_pc.valid && useBPD.B && 
       (preds(i).is_jal || preds(i).is_jalr || preds(i).is_call || preds(i).is_ret ||
       (preds(i).is_br && preds(i).taken))
@@ -85,7 +85,7 @@ class BranchPredictionLiteBundle(implicit p: Parameters) extends BoomBundle()(p)
     predicted_ghist
   }
   def cfi_offset = {
-    val offset  = Wire(Valid(UInt(log2Ceil(fetchWidth).W)))
+    val offset  = Wire(Valid(UInt(log2Ceil(predWidth).W)))
     offset.valid := predTakenVec.reduce(_||_)
     offset.bits  := PriorityEncoder(predTakenVec)
     offset
@@ -117,7 +117,7 @@ class BranchPredictionRespBundle(implicit p: Parameters) extends BoomBundle()(p)
     ))
   def selectedFtqentry = {
     val res = Wire(new FTQPCBundle)
-    val redirects = (0 until fetchWidth) map { i =>
+    val redirects = (0 until predWidth) map { i =>
       selectedResp.valid && fetchMask(selectedResp.pc)(i) && selectedResp.preds(i).predicted_pc.valid &&
       (selectedResp.preds(i).is_jal || selectedResp.preds(i).is_jalr || selectedResp.preds(i).is_call ||selectedResp.preds(i).is_ret|| 
         (selectedResp.preds(i).is_br && selectedResp.preds(i).taken))
@@ -150,16 +150,16 @@ class BranchPredictionUpdate(implicit p: Parameters) extends BoomBundle()(p)
   // Global predictors only care about non-speculative updates
   val is_mispredict_update = Bool()
   val is_repair_update = Bool()
-  val btb_mispredicts = UInt(fetchWidth.W)
+  val btb_mispredicts = UInt(predWidth.W)
   def is_btb_mispredict_update = btb_mispredicts =/= 0.U
   def is_commit_update = !(is_mispredict_update || is_repair_update || is_btb_mispredict_update)
 
   val pc            = UInt(vaddrBitsExtended.W)
   // Mask of instructions which are branches.
   // If these are not cfi_idx, then they were predicted not taken
-  val br_mask       = UInt(fetchWidth.W)
+  val br_mask       = UInt(predWidth.W)
   // Which CFI was taken/mispredicted (if any)
-  val cfi_idx       = Valid(UInt(log2Ceil(fetchWidth).W))
+  val cfi_idx       = Valid(UInt(log2Ceil(predWidth).W))
   // Was the cfi taken?
   val cfi_taken     = Bool()
   // Was the cfi mispredicted from the original prediction?
@@ -183,22 +183,22 @@ class BranchPredictionUpdate(implicit p: Parameters) extends BoomBundle()(p)
   val meta          = UInt(bpdMaxMetaLength.W)
 }
 
-// A branch update to a single bank
-class BranchPredictionBankUpdate(implicit p: Parameters) extends BoomBundle()(p)
+// A branch update to a single predictor.
+class BranchPredictorUpdate(implicit p: Parameters) extends BoomBundle()(p)
   with HasBoomFrontendParameters
 {
   val is_mispredict_update     = Bool()
   val is_repair_update         = Bool()
 
-  val btb_mispredicts  = UInt(fetchWidth.W)
+  val btb_mispredicts  = UInt(predWidth.W)
   def is_btb_mispredict_update = btb_mispredicts =/= 0.U
 
   def is_commit_update = !(is_mispredict_update || is_repair_update || is_btb_mispredict_update)
 
   val pc               = UInt(vaddrBitsExtended.W)
 
-  val br_mask          = UInt(fetchWidth.W)
-  val cfi_idx          = Valid(UInt(log2Ceil(fetchWidth).W))
+  val br_mask          = UInt(predWidth.W)
+  val cfi_idx          = Valid(UInt(log2Ceil(predWidth).W))
   val cfi_taken        = Bool()
   val cfi_mispredicted = Bool()
 
@@ -223,40 +223,38 @@ class BranchPredictionRequest(implicit p: Parameters) extends BoomBundle()(p)
 }
 
 
-class BranchPredictionBankResponse(implicit p: Parameters) extends BoomBundle()(p)
+class BranchPredictorResponse(implicit p: Parameters) extends BoomBundle()(p)
   with HasBoomFrontendParameters
 {
-  val f1 = Vec(fetchWidth, new BranchPrediction)
-  val f2 = Vec(fetchWidth, new BranchPrediction)
-  val f3 = Vec(fetchWidth, new BranchPrediction)
+  val f1 = Vec(predWidth, new BranchPrediction)
+  val f2 = Vec(predWidth, new BranchPrediction)
+  val f3 = Vec(predWidth, new BranchPrediction)
 }
 
 abstract class AbstractBranchPredictor(implicit p: Parameters) extends BoomModule()(p)
   with HasBoomFrontendParameters
 {
   val metaSz   = 0
-  val nbpdBanks = 8 //默认8 bank
   def nInputs  = 1
-  // require(nbpdBanks<=fetchWidth)
   val mems: Seq[Tuple3[String, Int, Int]]
 
   val io = IO(new Bundle {
     val f0_valid = Input(Bool())
     val f0_pc    = Input(UInt(vaddrBitsExtended.W))
-    val f0_mask  = Input(UInt(bankWidth.W))
+    val f0_mask  = Input(UInt(predWidth.W))
     // Local history not available until end of f1
     val f1_ghist = Input(UInt(globalHistoryLength.W))
     val f1_lhist = Input(UInt(localHistoryLength.W))
 
-    val resp_in = Input(Vec(nInputs, new BranchPredictionBankResponse))
-    val resp = Output(new BranchPredictionBankResponse)
+    val resp_in = Input(Vec(nInputs, new BranchPredictorResponse))
+    val resp = Output(new BranchPredictorResponse)
 
     // Store the meta as a UInt, use width inference to figure out the shape
     val f3_meta = Output(UInt(bpdMaxMetaLength.W))
 
     val f3_fire = Input(Bool())
 
-    val update = Input(Valid(new BranchPredictionBankUpdate))
+    val update = Input(Valid(new BranchPredictorUpdate))
   })
   io.resp := io.resp_in(0)
 
@@ -293,10 +291,10 @@ abstract class AbstractBranchPredictor(implicit p: Parameters) extends BoomModul
 /* 
 负责next pc和ghist维护
 
-input :fetchwidth
-process:bankwidth
-output:fetchwidth
-fetchwidth <= bankwidth
+input :predWidth
+process:predWidth
+output:predWidth
+predWidth <= predWidth
  */
 class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
  with HasBoomFrontendParameters
@@ -320,21 +318,7 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
     // val update = Input(Valid(new BranchPredictionUpdate))
   })
 
-  var total_memsize = 0
-  val bpdStr = new StringBuilder
-  bpdStr.append(BoomCoreStringPrefix("==Branch Predictor Memory Sizes==\n"))
-  val predictor =  Module(if (useBPD) new ComposedBranchPredictorBank else new NullBranchPredictorBank)
-  // (0 until nBanks) map ( b => {
-  //   val m =
-  //   for ((n, d, w) <- m.mems) {
-  //     bpdStr.append(BoomCoreStringPrefix(f"bank$b $n: $d x $w = ${d * w / 8}"))
-  //     total_memsize = total_memsize + d * w / 8
-  //   }
-  //   m
-  // })
-  // bpdStr.append(BoomCoreStringPrefix(f"Total bpd size: ${total_memsize / 1024} KB\n"))
-  // override def toString: String = bpdStr.toString
-
+  val predictor =  Module(if (useBPD) new ComposedBranchPredictor else new NullBranchPredictor)
   //TODO: BTB need to record call or ret so that we can use RAS and predict update
   val ras               = Module(new BoomRAS)
 //如果ftq没有空间，那么s1阶段会一直保持这个pc，并且持续预测（或者使用fire发送预测请求？）
@@ -410,25 +394,25 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
   s1_replay := s1_valid && !(s2_ready && io.toFtq.resp.ready)
   // val s3_target         = Wire(UInt(vaddrBitsExtended.W))
   val s3_align_pc       = fetchAlign(s3_pc)
-  val s3_taken_vec = WireInit(VecInit((0 until fetchWidth) map { i =>
+  val s3_taken_vec = WireInit(VecInit((0 until predWidth) map { i =>
     s3_resp.valid && fetchMask(s3_pc)(i) && s3_resp.preds(i).predicted_pc.valid &&
     (s3_resp.preds(i).is_jal||s3_resp.preds(i).is_jalr ||s3_resp.preds(i).is_call||s3_resp.preds(i).is_ret ||
     (s3_resp.preds(i).is_br && s3_resp.preds(i).taken))
   }))
-  val s3_taken_is_call = WireInit(VecInit((0 until fetchWidth) map { i =>
+  val s3_taken_is_call = WireInit(VecInit((0 until predWidth) map { i =>
     s3_resp.valid && fetchMask(s3_pc)(i) && s3_resp.preds(i).predicted_pc.valid &&
     (s3_resp.preds(i).is_call)
   }))
-  val s3_taken_is_rvi_call = WireInit(VecInit((0 until fetchWidth) map { i =>
+  val s3_taken_is_rvi_call = WireInit(VecInit((0 until predWidth) map { i =>
     s3_resp.valid && fetchMask(s3_pc)(i) && s3_resp.preds(i).predicted_pc.valid &&
     (s3_resp.preds(i).is_call)&&s3_resp.preds(i).is_rvi_call
   }))
-  val s3_taken_is_ret = WireInit(VecInit((0 until fetchWidth) map { i =>
+  val s3_taken_is_ret = WireInit(VecInit((0 until predWidth) map { i =>
     s3_resp.valid && fetchMask(s3_pc)(i) && s3_resp.preds(i).predicted_pc.valid &&
     (s3_resp.preds(i).is_ret)
   }))
   
-  val s3_is_br     = WireInit(VecInit((0 until fetchWidth) map { i =>
+  val s3_is_br     = WireInit(VecInit((0 until predWidth) map { i =>
     s3_resp.valid && fetchMask(s3_pc)(i) && s3_resp.preds(i).predicted_pc.valid &&
     (s3_resp.preds(i).is_br)
   }))
@@ -515,9 +499,9 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
 /* ----------------------------------- Req ---------------------------------- */
   // def predMask(pc: UInt) = {
   //   val base = fetchAlign(pc)
-  //   val idx = base.extract(log2Ceil(fetchWidth)+log2Ceil(coreInstBytes)-1, log2Ceil(coreInstBytes))//这里要求fetchwidth小于等于8
-  //   val mask = WireInit(0.U(bankWidth.W))
-  //   mask := ((1 << fetchWidth)-1).U << idx
+  //   val idx = base.extract(log2Ceil(predWidth)+log2Ceil(coreInstBytes)-1, log2Ceil(coreInstBytes))//这里要求predWidth小于等于8
+  //   val mask = WireInit(0.U(predWidth.W))
+  //   mask := ((1 << predWidth)-1).U << idx
   //   mask
   // }
   predictor.io.f0_valid   := s0_valid
@@ -525,7 +509,7 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
   predictor.io.f0_mask    := fetchMask(s0_pc)
   predictor.io.f1_ghist   := RegNext(s0_ghist.histories)
   predictor.io.f1_lhist   := DontCare
-  predictor.io.resp_in(0)           := (0.U).asTypeOf(new BranchPredictionBankResponse)
+  predictor.io.resp_in(0)           := (0.U).asTypeOf(new BranchPredictorResponse)
 
 
 
@@ -588,11 +572,11 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
   predictor.io.update.bits.cfi_idx.valid    := io.fromFtq.bpdupdate.bits.cfi_idx.valid
   predictor.io.update.bits.ghist            := io.fromFtq.bpdupdate.bits.ghist.histories
 
-  // when (io.fromFtq.bpdupdate.valid) {
-  //   when (io.fromFtq.bpdupdate.bits.cfi_is_br && io.fromFtq.bpdupdate.bits.cfi_idx.valid) {
-  //     assert(io.fromFtq.bpdupdate.bits.br_maskio.fromFtq.bpdupdate.bits.cfi_idx.bits)
-  //   }
-  // }
+  XSPerfAccumulate("s3_override",   s3_override)
+  XSPerfAccumulate("s2_override",   s2_override)
+  XSPerfAccumulate("f2_correct_f1_ghist",   f2_correct_f1_ghist)
+  XSPerfAccumulate("f3_correct_f2_ghist",   f3_correct_f2_ghist)
+  XSPerfAccumulate("f3_correct_f1_ghist",   f3_correct_f1_ghist)
 
   val commit_ghist        = RegInit(0.U.asTypeOf(new GlobalHistory))
   dontTouch(commit_ghist)
@@ -607,14 +591,12 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
       predictor.io.update.bits.cfi_is_call,
       predictor.io.update.bits.cfi_is_ret
     )
-    // assert(commit_ghist.histories === predictor.io.update.bits.ghist,
-    //   "Branch Predictor Commit Update GHist does not match the expected value!")
+    assert(commit_ghist.histories === predictor.io.update.bits.ghist,
+      "Branch Predictor Commit Update GHist does not match the expected value!")
   }
 }
 
-class NullBranchPredictorBank(implicit p: Parameters) extends AbstractBranchPredictor()(p) {
+class NullBranchPredictor(implicit p: Parameters) extends AbstractBranchPredictor()(p) {
   val mems = Nil
   println("Using null branch predictor")
 }
-
-

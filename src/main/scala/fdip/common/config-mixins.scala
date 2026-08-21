@@ -453,12 +453,12 @@ class WithTAGELBPD extends Config((site, here, up) => {
       globalHistoryLength = 64,
       localHistoryLength = 1,
       localHistoryNSets = 0,
-      branchPredictor = ((resp_in: boom.fdip.ifu.BranchPredictionBankResponse, p: Parameters) => {
-        // val loop = Module(new boom.fdip.ifu.LoopBranchPredictorBank()(p))
-        val tage = Module(new boom.fdip.ifu.TageBranchPredictorBank()(p))
-        val btb = Module(new boom.fdip.ifu.BTBBranchPredictorBank()(p))
-        val bim = Module(new boom.fdip.ifu.BIMBranchPredictorBank()(p))
-        val ubtb = Module(new boom.fdip.ifu.FAMicroBTBBranchPredictorBank()(p))
+      branchPredictor = ((resp_in: boom.fdip.ifu.BranchPredictorResponse, p: Parameters) => {
+        // val loop = Module(new boom.fdip.ifu.LoopBranchPredictor()(p))
+        val tage = Module(new boom.fdip.ifu.TageBranchPredictor()(p))
+        val btb = Module(new boom.fdip.ifu.BTBBranchPredictor()(p))
+        val bim = Module(new boom.fdip.ifu.BIMBranchPredictor()(p))
+        val ubtb = Module(new boom.fdip.ifu.FAMicroBTBBranchPredictor()(p))
         val preds = Seq( tage, btb, ubtb, bim)
         preds.map(_.io := DontCare)
 
@@ -482,13 +482,13 @@ class WithBoom2BPD extends Config((site, here, up) => {
       globalHistoryLength = 16,
       localHistoryLength = 1,
       localHistoryNSets = 0,
-      branchPredictor = ((resp_in: boom.fdip.ifu.BranchPredictionBankResponse, p: Parameters) => {
+      branchPredictor = ((resp_in: boom.fdip.ifu.BranchPredictorResponse, p: Parameters) => {
         // gshare is just variant of TAGE with 1 table
-        val gshare = Module(new boom.fdip.ifu.TageBranchPredictorBank(
+        val gshare = Module(new boom.fdip.ifu.TageBranchPredictor(
           boom.fdip.ifu.BoomTageParams(tableInfo = Seq((256, 16, 7)))
         )(p))
-        val btb = Module(new boom.fdip.ifu.BTBBranchPredictorBank()(p))
-        val bim = Module(new boom.fdip.ifu.BIMBranchPredictorBank()(p))
+        val btb = Module(new boom.fdip.ifu.BTBBranchPredictor()(p))
+        val bim = Module(new boom.fdip.ifu.BIMBranchPredictor()(p))
         val preds = Seq(bim, btb, gshare)
         preds.map(_.io := DontCare)
 
@@ -509,11 +509,11 @@ class WithAlpha21264BPD extends Config((site, here, up) => {
       globalHistoryLength = 32,
       localHistoryLength = 32,
       localHistoryNSets = 128,
-      branchPredictor = ((resp_in: boom.fdip.ifu.BranchPredictionBankResponse, p: Parameters) => {
-        val btb = Module(new boom.fdip.ifu.BTBBranchPredictorBank()(p))
-        val gbim = Module(new boom.fdip.ifu.HBIMBranchPredictorBank()(p))
-        val lbim = Module(new boom.fdip.ifu.HBIMBranchPredictorBank(boom.fdip.ifu.BoomHBIMParams(useLocal=true))(p))
-        val tourney = Module(new boom.fdip.ifu.TourneyBranchPredictorBank()(p))
+      branchPredictor = ((resp_in: boom.fdip.ifu.BranchPredictorResponse, p: Parameters) => {
+        val btb = Module(new boom.fdip.ifu.BTBBranchPredictor()(p))
+        val gbim = Module(new boom.fdip.ifu.HBIMBranchPredictor()(p))
+        val lbim = Module(new boom.fdip.ifu.HBIMBranchPredictor(boom.fdip.ifu.BoomHBIMParams(useLocal=true))(p))
+        val tourney = Module(new boom.fdip.ifu.TourneyBranchPredictor()(p))
         val preds = Seq(lbim, btb, gbim, tourney)
         preds.map(_.io := DontCare)
 
@@ -538,8 +538,8 @@ class WithSWBPD extends Config((site, here, up) => {
       globalHistoryLength = 32,
       localHistoryLength = 1,
       localHistoryNSets = 0,
-      branchPredictor = ((resp_in: boom.fdip.ifu.BranchPredictionBankResponse, p: Parameters) => {
-        val sw = Module(new boom.fdip.ifu.SwBranchPredictorBank()(p))
+      branchPredictor = ((resp_in: boom.fdip.ifu.BranchPredictorResponse, p: Parameters) => {
+        val sw = Module(new boom.fdip.ifu.SwBranchPredictor()(p))
 
         sw.io.resp_in(0) := resp_in
 

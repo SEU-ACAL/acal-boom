@@ -12,10 +12,10 @@ import boom.fdip.exu.{CommitExceptionSignals}
 import boom.fdip.util.{BoomCoreStringPrefix}
 
 
-class SwBranchPredictorBank(implicit p: Parameters) extends AbstractBranchPredictor()(p)
+class SwBranchPredictor(implicit p: Parameters) extends AbstractBranchPredictor()(p)
 {
   val mems = Nil
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     val btb_harness = Module(new BTBHarness)
     val pred_harness = Module(new BranchPredictorHarness)
 

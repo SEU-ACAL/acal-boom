@@ -18,10 +18,10 @@ case class BoomFAMicroBTBParams(
 )
 
 
-class FAMicroBTBBranchPredictorBank(params: BoomFAMicroBTBParams = BoomFAMicroBTBParams())(implicit p: Parameters) extends AbstractBranchPredictor()(p)
+class FAMicroBTBBranchPredictor(params: BoomFAMicroBTBParams = BoomFAMicroBTBParams())(implicit p: Parameters) extends AbstractBranchPredictor()(p)
 {
   override val nWays         = params.nWays
-  val tagSz         = vaddrBitsExtended - log2Ceil(fetchWidth) - 1
+  val tagSz         = vaddrBitsExtended - log2Ceil(predWidth) - 1
   val offsetSz      = params.offsetSz
   val nWrBypassEntries = 2
 
@@ -46,7 +46,7 @@ class FAMicroBTBBranchPredictorBank(params: BoomFAMicroBTBParams = BoomFAMicroBT
   }
 
   class MicroBTBPredictMeta extends Bundle {
-    val hits  = Vec(bankWidth, Bool())
+    val hits  = Vec(predWidth, Bool())
     val write_way = UInt(log2Ceil(nWays).W)
   }
 
@@ -54,20 +54,20 @@ class FAMicroBTBBranchPredictorBank(params: BoomFAMicroBTBParams = BoomFAMicroBT
   override val metaSz = s1_meta.asUInt.getWidth
 
 
-  val meta     = RegInit((0.U).asTypeOf(Vec(nWays, Vec(bankWidth, new MicroBTBMeta))))
-  val btb      = Reg(Vec(nWays, Vec(bankWidth, new MicroBTBEntry)))
+  val meta     = RegInit((0.U).asTypeOf(Vec(nWays, Vec(predWidth, new MicroBTBMeta))))
+  val btb      = Reg(Vec(nWays, Vec(predWidth, new MicroBTBEntry)))
 
   val mems = Nil
 
   val s1_req_tag   = s1_idx
 
 
-  val s1_resp   = Wire(Vec(bankWidth, Valid(UInt(vaddrBitsExtended.W))))
-  val s1_taken  = Wire(Vec(bankWidth, Bool()))
-  val s1_is_br  = Wire(Vec(bankWidth, Bool()))
-  val s1_is_jal = Wire(Vec(bankWidth, Bool()))
+  val s1_resp   = Wire(Vec(predWidth, Valid(UInt(vaddrBitsExtended.W))))
+  val s1_taken  = Wire(Vec(predWidth, Bool()))
+  val s1_is_br  = Wire(Vec(predWidth, Bool()))
+  val s1_is_jal = Wire(Vec(predWidth, Bool()))
 
-  val s1_hit_ohs = VecInit((0 until bankWidth) map { i =>
+  val s1_hit_ohs = VecInit((0 until predWidth) map { i =>
     VecInit((0 until nWays) map { w =>
       meta(w)(i).tag === s1_req_tag(tagSz-1,0)
     })
@@ -75,7 +75,7 @@ class FAMicroBTBBranchPredictorBank(params: BoomFAMicroBTBParams = BoomFAMicroBT
   val s1_hits     = s1_hit_ohs.map { oh => oh.reduce(_||_) }
   val s1_hit_ways = s1_hit_ohs.map { oh => PriorityEncoder(oh) }
 
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     val entry_meta = meta(s1_hit_ways(w))(w)
     s1_resp(w).valid := s1_valid && s1_hits(w)
     s1_resp(w).bits  := (s1_pc.asSInt + (w << 1).S + btb(s1_hit_ways(w))(w).offset).asUInt
@@ -98,7 +98,7 @@ class FAMicroBTBBranchPredictorBank(params: BoomFAMicroBTBParams = BoomFAMicroBT
     PriorityEncoder(s1_hit_ohs.map(_.asUInt).reduce(_|_)),
     alloc_way)
 
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     io.resp.f1(w).predicted_pc := s1_resp(w)
     io.resp.f1(w).is_br        := s1_is_br(w)
     io.resp.f1(w).is_jal       := s1_is_jal(w)
@@ -121,10 +121,10 @@ class FAMicroBTBBranchPredictorBank(params: BoomFAMicroBTBParams = BoomFAMicroBT
   val s1_update_wbtb_data     = Wire(new MicroBTBEntry)
   s1_update_wbtb_data.offset := new_offset_value
   val s1_update_wbtb_mask = (UIntToOH(s1_update_cfi_idx) &
-    Fill(bankWidth, s1_update.bits.cfi_idx.valid && s1_update.valid && s1_update.bits.cfi_taken && s1_update.bits.is_commit_update))
+    Fill(predWidth, s1_update.bits.cfi_idx.valid && s1_update.valid && s1_update.bits.cfi_taken && s1_update.bits.is_commit_update))
 
   val s1_update_wmeta_mask = ((s1_update_wbtb_mask | s1_update.bits.br_mask) &
-    Fill(bankWidth, s1_update.valid && s1_update.bits.is_commit_update))
+    Fill(predWidth, s1_update.valid && s1_update.bits.is_commit_update))
 
   // Write the BTB with the target
   when (s1_update.valid && s1_update.bits.cfi_taken && s1_update.bits.cfi_idx.valid && s1_update.bits.is_commit_update) {
@@ -132,7 +132,7 @@ class FAMicroBTBBranchPredictorBank(params: BoomFAMicroBTBParams = BoomFAMicroBT
   }
 
   // Write the meta
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     when (s1_update.valid && s1_update.bits.is_commit_update &&
       (s1_update.bits.br_mask(w) ||
         (s1_update_cfi_idx === w.U && s1_update.bits.cfi_taken && s1_update.bits.cfi_idx.valid))) {

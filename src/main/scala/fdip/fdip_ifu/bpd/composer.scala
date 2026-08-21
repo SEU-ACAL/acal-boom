@@ -11,7 +11,7 @@ import boom.fdip.common._
 import boom.fdip.util.{BoomCoreStringPrefix}
 import boom.fdip.ifu._
 
-class ComposedBranchPredictorBank(implicit p: Parameters) extends AbstractBranchPredictor()(p)
+class ComposedBranchPredictor(implicit p: Parameters) extends AbstractBranchPredictor()(p)
 {
 
   val (components, resp) = getBPDComponents(io.resp_in(0), p)

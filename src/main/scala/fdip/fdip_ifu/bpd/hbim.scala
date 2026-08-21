@@ -18,7 +18,7 @@ case class BoomHBIMParams(
   histLength: Int = 32
 )
 
-class HBIMBranchPredictorBank(params: BoomHBIMParams = BoomHBIMParams())(implicit p: Parameters) extends AbstractBranchPredictor()(p)
+class HBIMBranchPredictor(params: BoomHBIMParams = BoomHBIMParams())(implicit p: Parameters) extends AbstractBranchPredictor()(p)
 {
   override val nSets = params.nSets
 
@@ -42,8 +42,8 @@ class HBIMBranchPredictorBank(params: BoomHBIMParams = BoomHBIMParams())(implici
   when (reset_idx === (nSets-1).U) { doing_reset := false.B }
 
 
-  val data  = Seq.fill(bankWidth) { SyncReadMem(nSets, UInt(2.W)) }
-  val mems = Seq(("hbim", nSets, bankWidth * 2))
+  val data  = Seq.fill(predWidth) { SyncReadMem(nSets, UInt(2.W)) }
+  val mems = Seq(("hbim", nSets, predWidth * 2))
   def compute_folded_hist(hist: UInt, l: Int) = {
     val nChunks = (params.histLength + l - 1) / l
     val hist_chunks = (0 until nChunks) map {i =>
@@ -58,24 +58,24 @@ class HBIMBranchPredictorBank(params: BoomHBIMParams = BoomHBIMParams())(implici
 
   val s3_req_rdata    = RegNext(VecInit(data.map(_.read(f1_idx, s1_valid))))
 
-  val s3_resp         = Wire(Vec(bankWidth, Bool()))
+  val s3_resp         = Wire(Vec(predWidth, Bool()))
 
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
 
     s3_resp(w)        := s3_valid && s3_req_rdata(w)(1) && !doing_reset
     s3_meta.bims(w)   := s3_req_rdata(w)
   }
 
 
-  val s1_update_wdata   = Wire(Vec(bankWidth, UInt(2.W)))
-  val s1_update_wmask   = Wire(Vec(bankWidth, Bool()))
+  val s1_update_wdata   = Wire(Vec(predWidth, UInt(2.W)))
+  val s1_update_wmask   = Wire(Vec(predWidth, Bool()))
   val s1_update_meta    = s1_update.bits.meta.asTypeOf(new BIMMeta)
   val s1_update_index   = compute_folded_hist(
     if (params.useLocal) s1_update.bits.lhist else s1_update.bits.ghist,
     log2Ceil(nSets)) ^ s1_update_idx
 
   val wrbypass_idxs = Reg(Vec(nWrBypassEntries, UInt(log2Ceil(nSets).W)))
-  val wrbypass      = Reg(Vec(nWrBypassEntries, Vec(bankWidth, UInt(2.W))))
+  val wrbypass      = Reg(Vec(nWrBypassEntries, Vec(predWidth, UInt(2.W))))
   val wrbypass_enq_idx = RegInit(0.U(log2Ceil(nWrBypassEntries).W))
 
   val wrbypass_hits = VecInit((0 until nWrBypassEntries) map { i =>
@@ -87,7 +87,7 @@ class HBIMBranchPredictorBank(params: BoomHBIMParams = BoomHBIMParams())(implici
 
 
 
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     s1_update_wmask(w)         := false.B
     s1_update_wdata(w)         := DontCare
 
@@ -113,7 +113,7 @@ class HBIMBranchPredictorBank(params: BoomHBIMParams = BoomHBIMParams())(implici
 
   }
 
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     when (doing_reset || (s1_update_wmask(w) && s1_update.valid && s1_update.bits.is_commit_update)) {
       data(w).write(
         Mux(doing_reset, reset_idx, s1_update_index),
@@ -131,7 +131,7 @@ class HBIMBranchPredictorBank(params: BoomHBIMParams = BoomHBIMParams())(implici
     }
   }
 
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     io.resp.f3(w).taken := s3_resp(w)
   }
   io.f3_meta := s3_meta.asUInt

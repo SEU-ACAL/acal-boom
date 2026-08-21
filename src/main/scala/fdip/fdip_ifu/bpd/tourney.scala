@@ -17,7 +17,7 @@ case class BoomTourneyBPDParams(
   histLength: Int = 32
 )
 
-class TourneyBranchPredictorBank(params: BoomTourneyBPDParams = BoomTourneyBPDParams())(implicit p: Parameters) extends AbstractBranchPredictor()(p)
+class TourneyBranchPredictor(params: BoomTourneyBPDParams = BoomTourneyBPDParams())(implicit p: Parameters) extends AbstractBranchPredictor()(p)
 {
   override def nInputs = 2
   override val nSets = params.nSets
@@ -38,7 +38,7 @@ class TourneyBranchPredictorBank(params: BoomTourneyBPDParams = BoomTourneyBPDPa
   }
 
   class TourneyMeta extends Bundle {
-    val ctrs   = Vec(bankWidth, UInt(2.W))
+    val ctrs   = Vec(predWidth, UInt(2.W))
   }
   val s3_meta = Wire(new TourneyMeta)
   override val metaSz = s3_meta.asUInt.getWidth
@@ -48,15 +48,15 @@ class TourneyBranchPredictorBank(params: BoomTourneyBPDParams = BoomTourneyBPDPa
   reset_idx := reset_idx + doing_reset
   when (reset_idx === (nSets-1).U) { doing_reset := false.B }
 
-  val data = Seq.fill(bankWidth) { SyncReadMem(nSets, UInt(2.W)) } // TODO make this masked mem
-  val mems = Seq(("tourney", nSets, 2*bankWidth))
+  val data = Seq.fill(predWidth) { SyncReadMem(nSets, UInt(2.W)) } // TODO make this masked mem
+  val mems = Seq(("tourney", nSets, 2*predWidth))
 
   val f1_req_idx = compute_folded_hist(io.f1_ghist, log2Ceil(nSets)) ^ s1_idx
   val s3_req_rdata = RegNext(VecInit(data.map(_.read(f1_req_idx, s1_valid))))
-  val s3_resp = Wire(Vec(bankWidth, Bool()))
+  val s3_resp = Wire(Vec(predWidth, Bool()))
 
   io.resp := io.resp_in(0)
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     s3_resp(w) := Mux(s3_req_rdata(w)(1), io.resp_in(1).f3(w).taken, io.resp_in(0).f3(w).taken)  && !doing_reset
     s3_meta.ctrs(w) := s3_req_rdata(w)
 
@@ -64,12 +64,12 @@ class TourneyBranchPredictorBank(params: BoomTourneyBPDParams = BoomTourneyBPDPa
   }
   io.f3_meta := s3_meta.asUInt
 
-  val s1_update_wdata = Wire(Vec(bankWidth, UInt(2.W)))
-  val s1_update_wmask = Wire(Vec(bankWidth, Bool()))
+  val s1_update_wdata = Wire(Vec(predWidth, UInt(2.W)))
+  val s1_update_wmask = Wire(Vec(predWidth, Bool()))
   val s1_update_meta  = s1_update.bits.meta.asTypeOf(new TourneyMeta)
   val s1_update_index = compute_folded_hist(s1_update.bits.ghist, log2Ceil(nSets)) ^ s1_update_idx
 
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     s1_update_wmask(w) := false.B
     s1_update_wdata(w) := DontCare
 
@@ -86,7 +86,7 @@ class TourneyBranchPredictorBank(params: BoomTourneyBPDParams = BoomTourneyBPDPa
 
   }
 
-  for (w <- 0 until bankWidth) {
+  for (w <- 0 until predWidth) {
     when (doing_reset || (s1_update_wmask(w) && s1_update.valid && s1_update.bits.is_commit_update)) {
       data(w).write(
         Mux(doing_reset, reset_idx, s1_update_index),
