@@ -244,7 +244,6 @@ class WithNMegaBooms(n: Int = 1) extends Config(
               fetchWidth = 8,
               decodeWidth = 4,
               numRobEntries = 128,
-              enableBranchPrediction = true,
               issueParams = Seq(
                 IssueParams(issueWidth=2, numEntries=24, iqType=IQT_MEM.litValue, dispatchWidth=4),
                 IssueParams(issueWidth=4, numEntries=40, iqType=IQT_INT.litValue, dispatchWidth=4),
@@ -363,7 +362,6 @@ class WithNCS152BaselineBooms(n: Int = 1) extends Config(
               numLdqEntries = 8,                // CS152: Change me (2+)
               numStqEntries = 8,                // CS152: Change me (2+)
               maxBrCount = 8,                   // CS152: Change me (2+)
-              enableBranchPrediction = false,   // CS152: Change me
               numRasEntries = 0,                // CS152: Change me
 
               // DO NOT CHANGE BELOW
@@ -412,7 +410,6 @@ class WithNCS152DefaultBooms(n: Int = 1) extends Config(
               numLdqEntries = 16,               // CS152: Change me (2+)
               numStqEntries = 16,               // CS152: Change me (2+)
               maxBrCount = 12,                  // CS152: Change me (2+)
-              enableBranchPrediction = true,    // CS152: Change me
               numRasEntries = 16,               // CS152: Change me
 
               // DO NOT CHANGE BELOW

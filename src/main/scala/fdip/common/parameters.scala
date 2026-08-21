@@ -59,7 +59,6 @@ case class BoomCoreParams(
   enableICacheDelay: Boolean = false,
 
   /* branch prediction */
-  enableBranchPrediction: Boolean = true,
   globalHistoryLength: Int = 64,
   localHistoryLength: Int = 32,
   localHistoryNSets: Int = 128,
@@ -250,8 +249,6 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val nRasEntries = boomParams.numRasEntries max 2
   val useRAS = boomParams.numRasEntries > 0
   val enableRasTopRepair = boomParams.enableRasTopRepair
-
-  val useBPD = boomParams.enableBranchPrediction
 
   val useLHist = localHistoryNSets > 1 && localHistoryLength > 1
 
