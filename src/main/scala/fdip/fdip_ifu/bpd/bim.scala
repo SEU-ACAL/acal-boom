@@ -23,8 +23,33 @@ case class BoomBIMParams(
   nSets: Int = 2048
 )
 
-class BIMBranchPredictor(params: BoomBIMParams = BoomBIMParams())(implicit p: Parameters) extends AbstractBranchPredictor()(p)
+class BIMBranchPredictor(params: BoomBIMParams = BoomBIMParams())(implicit p: Parameters) extends BoomModule()(p)
+  with HasBoomFrontendParameters
 {
+  val io = IO(new BIMPredictorIO)
+  io.resp := io.resp_in
+
+  val s0_idx       = fetchIdx(io.f0_pc)
+  val s1_idx       = RegNext(s0_idx)
+  val s2_idx       = RegNext(s1_idx)
+  val s3_idx       = RegNext(s2_idx)
+  val s0_valid     = io.f0_valid
+  val s1_valid     = RegNext(s0_valid)
+  val s2_valid     = RegNext(s1_valid)
+  val s3_valid     = RegNext(s2_valid)
+  val s0_mask      = io.f0_mask
+  val s1_mask      = RegNext(s0_mask)
+  val s2_mask      = RegNext(s1_mask)
+  val s3_mask      = RegNext(s2_mask)
+  val s0_pc        = io.f0_pc
+  val s1_pc        = RegNext(s0_pc)
+  val s0_update    = io.update
+  val s0_update_idx = fetchIdx(io.update.bits.pc)
+  val s0_update_valid = io.update.valid
+  val s1_update    = RegNext(s0_update)
+  val s1_update_idx = RegNext(s0_update_idx)
+  val s1_update_valid = RegNext(s0_update_valid)
+
   override val nSets = params.nSets
 
   require(isPow2(nSets))
@@ -39,7 +64,6 @@ class BIMBranchPredictor(params: BoomBIMParams = BoomBIMParams())(implicit p: Pa
       Mux(taken, v + 1.U, v - 1.U)))
   }
   val s2_meta           = Wire(new BIMMeta)
-  override val metaSz   = s2_meta.asUInt.getWidth
 
   val doing_reset = RegInit(true.B)
   val reset_idx = RegInit(0.U(log2Ceil(nSets).W))
@@ -48,8 +72,6 @@ class BIMBranchPredictor(params: BoomBIMParams = BoomBIMParams())(implicit p: Pa
 
 
   val data  = SyncReadMem(nSets, Vec(predWidth, UInt(2.W)))
-
-  val mems = Seq(("bim", nSets, predWidth * 2))
 
   val s2_req_rdata    = RegNext(data.read(s0_idx   , s0_valid))
 
@@ -66,7 +88,7 @@ class BIMBranchPredictor(params: BoomBIMParams = BoomBIMParams())(implicit p: Pa
 
   val s1_update_wdata   = Wire(Vec(predWidth, UInt(2.W)))
   val s1_update_wmask   = Wire(Vec(predWidth, Bool()))
-  val s1_update_meta    = s1_update.bits.meta.asTypeOf(new BIMMeta)
+  val s1_update_meta    = s1_update.bits.meta
   val s1_update_index   = s1_update_idx
 
   val wrbypass_idxs = Reg(Vec(nWrBypassEntries, UInt(log2Ceil(nSets).W)))
@@ -129,5 +151,5 @@ class BIMBranchPredictor(params: BoomBIMParams = BoomBIMParams())(implicit p: Pa
     io.resp.f2(w).taken := s2_resp(w)
     io.resp.f3(w).taken := RegNext(io.resp.f2(w).taken)
   }
-  io.f3_meta := RegNext(s2_meta.asUInt)
+  io.f3_meta := RegNext(s2_meta)
 }

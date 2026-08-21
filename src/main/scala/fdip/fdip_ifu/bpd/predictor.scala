@@ -222,6 +222,106 @@ class BranchPredictionUpdate(implicit p: Parameters) extends BoomBundle()(p)
   val meta          = new BranchPredictionMeta
 }
 
+abstract class TypedBranchPredictorUpdate(implicit p: Parameters) extends BoomBundle()(p)
+  with HasBoomFrontendParameters
+{
+  val is_mispredict_update = Bool()
+  val is_repair_update     = Bool()
+  val btb_mispredicts      = UInt(predWidth.W)
+  def is_btb_mispredict_update = btb_mispredicts =/= 0.U
+  def is_commit_update = !(is_mispredict_update || is_repair_update || is_btb_mispredict_update)
+
+  val pc               = UInt(vaddrBitsExtended.W)
+  val br_mask          = UInt(predWidth.W)
+  val cfi_idx          = Valid(UInt(log2Ceil(predWidth).W))
+  val cfi_taken        = Bool()
+  val cfi_mispredicted = Bool()
+  val cfi_is_br        = Bool()
+  val cfi_is_jal       = Bool()
+  val cfi_is_jalr      = Bool()
+  val cfi_is_call      = Bool()
+  val cfi_is_ret       = Bool()
+  val ghist            = UInt(globalHistoryLength.W)
+  val lhist            = UInt(localHistoryLength.W)
+  val target           = UInt(vaddrBitsExtended.W)
+}
+
+class FAMicroBTBPredictorUpdate(implicit p: Parameters) extends TypedBranchPredictorUpdate()(p) {
+  val meta = new FAMicroBTBPredictMeta(BoomFAMicroBTBParams().nWays)
+}
+
+class BIMPredictorUpdate(implicit p: Parameters) extends TypedBranchPredictorUpdate()(p) {
+  val meta = new BIMMeta
+}
+
+class BTBPredictorUpdate(implicit p: Parameters) extends TypedBranchPredictorUpdate()(p) {
+  val meta = new BTBPredictMeta(BoomBTBParams().nWays)
+}
+
+class TagePredictorUpdate(implicit p: Parameters) extends TypedBranchPredictorUpdate()(p) {
+  val meta = new TagePredictMeta(BoomTageParams().tableInfo.size)
+}
+
+class FAMicroBTBPredictorIO(implicit p: Parameters) extends BoomBundle()(p)
+  with HasBoomFrontendParameters
+{
+  val f0_valid = Input(Bool())
+  val f0_pc    = Input(UInt(vaddrBitsExtended.W))
+  val f0_mask  = Input(UInt(predWidth.W))
+  val f1_ghist = Input(UInt(globalHistoryLength.W))
+  val f1_lhist = Input(UInt(localHistoryLength.W))
+  val resp_in  = Input(new BranchPredictorResponse)
+  val resp     = Output(new BranchPredictorResponse)
+  val f3_meta  = Output(new FAMicroBTBPredictMeta(BoomFAMicroBTBParams().nWays))
+  val f3_fire  = Input(Bool())
+  val update   = Input(Valid(new FAMicroBTBPredictorUpdate))
+}
+
+class BIMPredictorIO(implicit p: Parameters) extends BoomBundle()(p)
+  with HasBoomFrontendParameters
+{
+  val f0_valid = Input(Bool())
+  val f0_pc    = Input(UInt(vaddrBitsExtended.W))
+  val f0_mask  = Input(UInt(predWidth.W))
+  val f1_ghist = Input(UInt(globalHistoryLength.W))
+  val f1_lhist = Input(UInt(localHistoryLength.W))
+  val resp_in  = Input(new BranchPredictorResponse)
+  val resp     = Output(new BranchPredictorResponse)
+  val f3_meta  = Output(new BIMMeta)
+  val f3_fire  = Input(Bool())
+  val update   = Input(Valid(new BIMPredictorUpdate))
+}
+
+class BTBPredictorIO(implicit p: Parameters) extends BoomBundle()(p)
+  with HasBoomFrontendParameters
+{
+  val f0_valid = Input(Bool())
+  val f0_pc    = Input(UInt(vaddrBitsExtended.W))
+  val f0_mask  = Input(UInt(predWidth.W))
+  val f1_ghist = Input(UInt(globalHistoryLength.W))
+  val f1_lhist = Input(UInt(localHistoryLength.W))
+  val resp_in  = Input(new BranchPredictorResponse)
+  val resp     = Output(new BranchPredictorResponse)
+  val f3_meta  = Output(new BTBPredictMeta(BoomBTBParams().nWays))
+  val f3_fire  = Input(Bool())
+  val update   = Input(Valid(new BTBPredictorUpdate))
+}
+
+class TagePredictorIO(implicit p: Parameters) extends BoomBundle()(p)
+  with HasBoomFrontendParameters
+{
+  val f0_valid = Input(Bool())
+  val f0_pc    = Input(UInt(vaddrBitsExtended.W))
+  val f0_mask  = Input(UInt(predWidth.W))
+  val f1_ghist = Input(UInt(globalHistoryLength.W))
+  val f1_lhist = Input(UInt(localHistoryLength.W))
+  val resp_in  = Input(new BranchPredictorResponse)
+  val resp     = Output(new BranchPredictorResponse)
+  val f3_meta  = Output(new TagePredictMeta(BoomTageParams().tableInfo.size))
+  val f3_fire  = Input(Bool())
+  val update   = Input(Valid(new TagePredictorUpdate))
+}
+
 // A branch update to a single predictor.
 class BranchPredictorUpdate(implicit p: Parameters) extends BoomBundle()(p)
   with HasBoomFrontendParameters
@@ -434,17 +534,17 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
   tage.io.f3_fire  := bpdF3Fire
 
   val emptyBpdResp = WireInit(0.U.asTypeOf(new BranchPredictorResponse))
-  microBtb.io.resp_in(0) := emptyBpdResp
-  bim.io.resp_in(0)      := microBtb.io.resp
-  btb.io.resp_in(0)      := bim.io.resp
-  tage.io.resp_in(0)     := btb.io.resp
+  microBtb.io.resp_in := emptyBpdResp
+  bim.io.resp_in      := microBtb.io.resp
+  btb.io.resp_in      := bim.io.resp
+  tage.io.resp_in     := btb.io.resp
   val bpdResp = tage.io.resp
 
   val bpdMeta = Wire(new BranchPredictionMeta)
-  bpdMeta.tage     := tage.io.f3_meta.asTypeOf(new TagePredictMeta(tage.tageNTables))
-  bpdMeta.btb      := btb.io.f3_meta.asTypeOf(new BTBPredictMeta(btb.nWays))
-  bpdMeta.microBtb := microBtb.io.f3_meta.asTypeOf(new FAMicroBTBPredictMeta(microBtb.nWays))
-  bpdMeta.bim      := bim.io.f3_meta.asTypeOf(new BIMMeta)
+  bpdMeta.tage     := tage.io.f3_meta
+  bpdMeta.btb      := btb.io.f3_meta
+  bpdMeta.microBtb := microBtb.io.f3_meta
+  bpdMeta.bim      := bim.io.f3_meta
   //实质上，只要s1阶段fire，那么s2，s3必然valid,
 
   //TODO:delete handshake signal
@@ -631,36 +731,38 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
   io.toFtq.resp.bits.f2.lhist := DontCare
   io.toFtq.resp.bits.f3.lhist := DontCare
 /* --------------------------------- update --------------------------------- */
-  val bpdUpdate = Wire(Valid(new BranchPredictorUpdate))
-  bpdUpdate.bits.is_mispredict_update := io.fromFtq.bpdupdate.bits.is_mispredict_update
-  bpdUpdate.bits.is_repair_update     := io.fromFtq.bpdupdate.bits.is_repair_update
-  bpdUpdate.bits.meta                  := 0.U
-  bpdUpdate.bits.lhist                 := io.fromFtq.bpdupdate.bits.lhist
-  bpdUpdate.bits.cfi_idx.bits          := io.fromFtq.bpdupdate.bits.cfi_idx.bits
-  bpdUpdate.bits.cfi_taken             := io.fromFtq.bpdupdate.bits.cfi_taken
-  bpdUpdate.bits.cfi_mispredicted      := io.fromFtq.bpdupdate.bits.cfi_mispredicted
-  bpdUpdate.bits.cfi_is_br             := io.fromFtq.bpdupdate.bits.cfi_is_br
-  bpdUpdate.bits.cfi_is_jal            := io.fromFtq.bpdupdate.bits.cfi_is_jal
-  bpdUpdate.bits.cfi_is_jalr           := io.fromFtq.bpdupdate.bits.cfi_is_jalr
-  bpdUpdate.bits.cfi_is_ret            := io.fromFtq.bpdupdate.bits.cfi_is_ret
-  bpdUpdate.bits.cfi_is_call           := io.fromFtq.bpdupdate.bits.cfi_is_call
-  bpdUpdate.bits.target                := io.fromFtq.bpdupdate.bits.target
-  bpdUpdate.valid                      := io.fromFtq.bpdupdate.valid
-  bpdUpdate.bits.pc                    := fetchAlign(io.fromFtq.bpdupdate.bits.pc)
-  bpdUpdate.bits.br_mask               := io.fromFtq.bpdupdate.bits.br_mask
-  bpdUpdate.bits.btb_mispredicts       := io.fromFtq.bpdupdate.bits.btb_mispredicts
-  bpdUpdate.bits.cfi_idx.valid         := io.fromFtq.bpdupdate.bits.cfi_idx.valid
-  bpdUpdate.bits.ghist                 := io.fromFtq.bpdupdate.bits.ghist.histories
+  def connectPredictorUpdate[T <: TypedBranchPredictorUpdate](update: Valid[T]): Unit = {
+    val source = io.fromFtq.bpdupdate
 
-  microBtb.io.update := bpdUpdate
-  bim.io.update      := bpdUpdate
-  btb.io.update      := bpdUpdate
-  tage.io.update     := bpdUpdate
+    update.valid                     := source.valid
+    update.bits.is_mispredict_update := source.bits.is_mispredict_update
+    update.bits.is_repair_update     := source.bits.is_repair_update
+    update.bits.btb_mispredicts      := source.bits.btb_mispredicts
+    update.bits.pc                   := fetchAlign(source.bits.pc)
+    update.bits.br_mask              := source.bits.br_mask
+    update.bits.cfi_idx.bits         := source.bits.cfi_idx.bits
+    update.bits.cfi_idx.valid        := source.bits.cfi_idx.valid
+    update.bits.cfi_taken            := source.bits.cfi_taken
+    update.bits.cfi_mispredicted     := source.bits.cfi_mispredicted
+    update.bits.cfi_is_br            := source.bits.cfi_is_br
+    update.bits.cfi_is_jal           := source.bits.cfi_is_jal
+    update.bits.cfi_is_jalr          := source.bits.cfi_is_jalr
+    update.bits.cfi_is_call          := source.bits.cfi_is_call
+    update.bits.cfi_is_ret           := source.bits.cfi_is_ret
+    update.bits.ghist                := source.bits.ghist.histories
+    update.bits.lhist                := source.bits.lhist
+    update.bits.target               := source.bits.target
+  }
 
-  bim.io.update.bits.meta      := io.fromFtq.bpdupdate.bits.meta.bim.asUInt
-  microBtb.io.update.bits.meta := io.fromFtq.bpdupdate.bits.meta.microBtb.asUInt
-  btb.io.update.bits.meta      := io.fromFtq.bpdupdate.bits.meta.btb.asUInt
-  tage.io.update.bits.meta     := io.fromFtq.bpdupdate.bits.meta.tage.asUInt
+  connectPredictorUpdate(microBtb.io.update)
+  connectPredictorUpdate(bim.io.update)
+  connectPredictorUpdate(btb.io.update)
+  connectPredictorUpdate(tage.io.update)
+
+  microBtb.io.update.bits.meta := io.fromFtq.bpdupdate.bits.meta.microBtb
+  bim.io.update.bits.meta      := io.fromFtq.bpdupdate.bits.meta.bim
+  btb.io.update.bits.meta      := io.fromFtq.bpdupdate.bits.meta.btb
+  tage.io.update.bits.meta     := io.fromFtq.bpdupdate.bits.meta.tage
 
   XSPerfAccumulate("f2_correct_f1_ghist",   f2_correct_f1_ghist)
   XSPerfAccumulate("f3_correct_f2_ghist",   f3_correct_f2_ghist)
@@ -668,18 +770,18 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
 
   val commit_ghist        = RegInit(0.U.asTypeOf(new GlobalHistory))
   dontTouch(commit_ghist)
-  when (io.fromFtq.bpdupdate.valid && bpdUpdate.bits.is_commit_update) {
+  when (io.fromFtq.bpdupdate.valid && io.fromFtq.bpdupdate.bits.is_commit_update) {
     commit_ghist := commit_ghist.update(
-      bpdUpdate.bits.br_mask,
-      bpdUpdate.bits.cfi_taken,
-      bpdUpdate.bits.cfi_is_br,
-      bpdUpdate.bits.cfi_idx.bits,
-      bpdUpdate.bits.cfi_idx.valid,
-      bpdUpdate.bits.pc,
-      bpdUpdate.bits.cfi_is_call,
-      bpdUpdate.bits.cfi_is_ret
+      io.fromFtq.bpdupdate.bits.br_mask,
+      io.fromFtq.bpdupdate.bits.cfi_taken,
+      io.fromFtq.bpdupdate.bits.cfi_is_br,
+      io.fromFtq.bpdupdate.bits.cfi_idx.bits,
+      io.fromFtq.bpdupdate.bits.cfi_idx.valid,
+      fetchAlign(io.fromFtq.bpdupdate.bits.pc),
+      io.fromFtq.bpdupdate.bits.cfi_is_call,
+      io.fromFtq.bpdupdate.bits.cfi_is_ret
     )
-    // assert(commit_ghist.histories === bpdUpdate.bits.ghist,
+    // assert(commit_ghist.histories === io.fromFtq.bpdupdate.bits.ghist.histories,
     //   "Branch Predictor Commit Update GHist does not match the expected value!")
   }
 }

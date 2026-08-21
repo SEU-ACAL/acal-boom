@@ -20,8 +20,33 @@ case class BoomBTBParams(
 )
 
 
-class BTBBranchPredictor(params: BoomBTBParams = BoomBTBParams())(implicit p: Parameters) extends AbstractBranchPredictor()(p)
+class BTBBranchPredictor(params: BoomBTBParams = BoomBTBParams())(implicit p: Parameters) extends BoomModule()(p)
+  with HasBoomFrontendParameters
 {
+  val io = IO(new BTBPredictorIO)
+  io.resp := io.resp_in
+
+  val s0_idx       = fetchIdx(io.f0_pc)
+  val s1_idx       = RegNext(s0_idx)
+  val s2_idx       = RegNext(s1_idx)
+  val s3_idx       = RegNext(s2_idx)
+  val s0_valid     = io.f0_valid
+  val s1_valid     = RegNext(s0_valid)
+  val s2_valid     = RegNext(s1_valid)
+  val s3_valid     = RegNext(s2_valid)
+  val s0_mask      = io.f0_mask
+  val s1_mask      = RegNext(s0_mask)
+  val s2_mask      = RegNext(s1_mask)
+  val s3_mask      = RegNext(s2_mask)
+  val s0_pc        = io.f0_pc
+  val s1_pc        = RegNext(s0_pc)
+  val s0_update    = io.update
+  val s0_update_idx = fetchIdx(io.update.bits.pc)
+  val s0_update_valid = io.update.valid
+  val s1_update    = RegNext(s0_update)
+  val s1_update_idx = RegNext(s0_update_idx)
+  val s1_update_valid = RegNext(s0_update_valid)
+
   override val nSets         = params.nSets
   override val nWays         = params.nWays
   val tagSz         = vaddrBitsExtended - log2Ceil(nSets) - log2Ceil(predWidth) - 1
@@ -47,11 +72,7 @@ class BTBBranchPredictor(params: BoomBTBParams = BoomBTBParams())(implicit p: Pa
 
   val s1_meta = Wire(new BTBPredictMeta(nWays))
   val f3_meta = RegNext(RegNext(s1_meta))
-
-
-  io.f3_meta := f3_meta.asUInt
-
-  override val metaSz = s1_meta.asUInt.getWidth
+  io.f3_meta := f3_meta
 
   val doing_reset = RegInit(true.B)
   val reset_idx   = RegInit(0.U(log2Ceil(nSets).W))
@@ -61,10 +82,6 @@ class BTBBranchPredictor(params: BoomBTBParams = BoomBTBParams())(implicit p: Pa
   val meta     = Seq.fill(nWays) { SyncReadMem(nSets, Vec(predWidth, UInt(btbMetaSz.W))) }
   val btb      = Seq.fill(nWays) { SyncReadMem(nSets, Vec(predWidth, UInt(btbEntrySz.W))) }
   val ebtb     = SyncReadMem(extendedNSets, UInt(vaddrBitsExtended.W))
-
-  val mems = (((0 until nWays) map ({w:Int => Seq(
-    (f"btb_meta_way$w", nSets, predWidth * btbMetaSz),
-    (f"btb_data_way$w", nSets, predWidth * btbEntrySz))})).flatten ++ Seq(("ebtb", extendedNSets, vaddrBitsExtended)))
 
   val s1_req_rbtb  = WireInit(VecInit(btb.map { b => VecInit(b.read(s0_idx , s0_valid).map(_.asTypeOf(new BTBEntry))) }))
   val s1_req_rmeta = WireInit(VecInit(meta.map { m => VecInit(m.read(s0_idx, s0_valid).map(_.asTypeOf(new BTBMeta))) }))
@@ -99,8 +116,8 @@ class BTBBranchPredictor(params: BoomBTBParams = BoomBTBParams())(implicit p: Pa
     s1_is_jal(w) := !doing_reset && s1_resp(w).valid && !entry_meta.is_br
 
 
-    io.resp.f2(w) := io.resp_in(0).f2(w)
-    io.resp.f3(w) := io.resp_in(0).f3(w)
+    io.resp.f2(w) := io.resp_in.f2(w)
+    io.resp.f3(w) := io.resp_in.f3(w)
     when (RegNext(s1_hits(w))) {
       io.resp.f2(w).predicted_pc := RegNext(s1_resp(w))
       io.resp.f2(w).is_br        := RegNext(s1_is_br(w))
@@ -135,7 +152,7 @@ class BTBBranchPredictor(params: BoomBTBParams = BoomBTBParams())(implicit p: Pa
     alloc_way)
 
   val s1_update_cfi_idx = s1_update.bits.cfi_idx.bits
-  val s1_update_meta    = s1_update.bits.meta.asTypeOf(new BTBPredictMeta(nWays))
+  val s1_update_meta    = s1_update.bits.meta
 
   val max_offset_value = Cat(0.B, ~(0.U((offsetSz-1).W))).asSInt
   val min_offset_value = Cat(1.B,  (0.U((offsetSz-1).W))).asSInt

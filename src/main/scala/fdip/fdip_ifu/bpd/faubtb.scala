@@ -18,8 +18,33 @@ case class BoomFAMicroBTBParams(
 )
 
 
-class FAMicroBTBBranchPredictor(params: BoomFAMicroBTBParams = BoomFAMicroBTBParams())(implicit p: Parameters) extends AbstractBranchPredictor()(p)
+class FAMicroBTBBranchPredictor(params: BoomFAMicroBTBParams = BoomFAMicroBTBParams())(implicit p: Parameters) extends BoomModule()(p)
+  with HasBoomFrontendParameters
 {
+  val io = IO(new FAMicroBTBPredictorIO)
+  io.resp := io.resp_in
+
+  val s0_idx       = fetchIdx(io.f0_pc)
+  val s1_idx       = RegNext(s0_idx)
+  val s2_idx       = RegNext(s1_idx)
+  val s3_idx       = RegNext(s2_idx)
+  val s0_valid     = io.f0_valid
+  val s1_valid     = RegNext(s0_valid)
+  val s2_valid     = RegNext(s1_valid)
+  val s3_valid     = RegNext(s2_valid)
+  val s0_mask      = io.f0_mask
+  val s1_mask      = RegNext(s0_mask)
+  val s2_mask      = RegNext(s1_mask)
+  val s3_mask      = RegNext(s2_mask)
+  val s0_pc        = io.f0_pc
+  val s1_pc        = RegNext(s0_pc)
+  val s0_update    = io.update
+  val s0_update_idx = fetchIdx(io.update.bits.pc)
+  val s0_update_valid = io.update.valid
+  val s1_update    = RegNext(s0_update)
+  val s1_update_idx = RegNext(s0_update_idx)
+  val s1_update_valid = RegNext(s0_update_valid)
+
   override val nWays         = params.nWays
   val tagSz         = vaddrBitsExtended - log2Ceil(predWidth) - 1
   val offsetSz      = params.offsetSz
@@ -46,13 +71,10 @@ class FAMicroBTBBranchPredictor(params: BoomFAMicroBTBParams = BoomFAMicroBTBPar
   }
 
   val s1_meta = Wire(new FAMicroBTBPredictMeta(nWays))
-  override val metaSz = s1_meta.asUInt.getWidth
 
 
   val meta     = RegInit((0.U).asTypeOf(Vec(nWays, Vec(predWidth, new MicroBTBMeta))))
   val btb      = Reg(Vec(nWays, Vec(predWidth, new MicroBTBEntry)))
-
-  val mems = Nil
 
   val s1_req_tag   = s1_idx
 
@@ -102,10 +124,10 @@ class FAMicroBTBBranchPredictor(params: BoomFAMicroBTBParams = BoomFAMicroBTBPar
     io.resp.f2(w) := RegNext(io.resp.f1(w))
     io.resp.f3(w) := RegNext(io.resp.f2(w))
   }
-  io.f3_meta := RegNext(RegNext(s1_meta.asUInt))
+  io.f3_meta := RegNext(RegNext(s1_meta))
 
   val s1_update_cfi_idx = s1_update.bits.cfi_idx.bits
-  val s1_update_meta    = s1_update.bits.meta.asTypeOf(new FAMicroBTBPredictMeta(nWays))
+  val s1_update_meta    = s1_update.bits.meta
   val s1_update_write_way = s1_update_meta.write_way
 
   val max_offset_value = (~(0.U)((offsetSz-1).W)).asSInt

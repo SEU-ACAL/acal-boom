@@ -195,14 +195,37 @@ case class BoomTageParams(
 )
 
 
-class TageBranchPredictor(params: BoomTageParams = BoomTageParams())(implicit p: Parameters) extends AbstractBranchPredictor()(p)
+class TageBranchPredictor(params: BoomTageParams = BoomTageParams())(implicit p: Parameters) extends BoomModule()(p)
+  with HasBoomFrontendParameters
 {
+  val io = IO(new TagePredictorIO)
+  io.resp := io.resp_in
+
+  val s0_idx       = fetchIdx(io.f0_pc)
+  val s1_idx       = RegNext(s0_idx)
+  val s2_idx       = RegNext(s1_idx)
+  val s3_idx       = RegNext(s2_idx)
+  val s0_valid     = io.f0_valid
+  val s1_valid     = RegNext(s0_valid)
+  val s2_valid     = RegNext(s1_valid)
+  val s3_valid     = RegNext(s2_valid)
+  val s0_mask      = io.f0_mask
+  val s1_mask      = RegNext(s0_mask)
+  val s2_mask      = RegNext(s1_mask)
+  val s3_mask      = RegNext(s2_mask)
+  val s0_pc        = io.f0_pc
+  val s1_pc        = RegNext(s0_pc)
+  val s0_update    = io.update
+  val s0_update_idx = fetchIdx(io.update.bits.pc)
+  val s0_update_valid = io.update.valid
+  val s1_update    = RegNext(s0_update)
+  val s1_update_idx = RegNext(s0_update_idx)
+  val s1_update_valid = RegNext(s0_update_valid)
+
   val tageUBitPeriod = params.uBitPeriod
   val tageNTables    = params.tableInfo.size
 
   val f3_meta = Wire(new TagePredictMeta(tageNTables))
-  override val metaSz = f3_meta.asUInt.getWidth
-  require(metaSz <= bpdMaxMetaLength)
 
   def inc_u(u: UInt, alt_differs: Bool, mispredict: Bool): UInt = {
     Mux(!alt_differs, u,
@@ -220,11 +243,9 @@ class TageBranchPredictor(params: BoomTageParams = BoomTageParams())(implicit p:
     }
   }
   val tables = tt.map(_._1)
-  val mems = tt.map(_._2).flatten
-
   val f3_resps = VecInit(tables.map(_.io.f3_resp))
 
-  val s1_update_meta = s1_update.bits.meta.asTypeOf(new TagePredictMeta(tageNTables))
+  val s1_update_meta = s1_update.bits.meta
   val s1_update_mispredict_mask = UIntToOH(s1_update.bits.cfi_idx.bits) &
     Fill(predWidth, s1_update.bits.cfi_mispredicted)
 
@@ -243,11 +264,11 @@ class TageBranchPredictor(params: BoomTageParams = BoomTageParams())(implicit p:
 
 
   for (w <- 0 until predWidth) {
-    var altpred = io.resp_in(0).f3(w).taken
-    val final_altpred = WireInit(io.resp_in(0).f3(w).taken)
+    var altpred = io.resp_in.f3(w).taken
+    val final_altpred = WireInit(io.resp_in.f3(w).taken)
     var provided = false.B
     var provider = 0.U
-    io.resp.f3(w).taken := io.resp_in(0).f3(w).taken
+    io.resp.f3(w).taken := io.resp_in.f3(w).taken
 
     for (i <- 0 until tageNTables) {
       val hit = f3_resps(i)(w).valid
@@ -347,5 +368,5 @@ class TageBranchPredictor(params: BoomTageParams = BoomTageParams())(implicit p:
 
 
   //io.f3_meta := Cat(f3_meta.asUInt, micro.io.f3_meta(micro.metaSz-1,0), base.io.f3_meta(base.metaSz-1, 0))
-  io.f3_meta := f3_meta.asUInt
+  io.f3_meta := f3_meta
 }
