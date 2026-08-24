@@ -46,6 +46,7 @@ case class BoomCoreParams(
   enableSFBOpt: Boolean = false,
   enableGHistStallRepair: Boolean = true,
   enableBTBFastRepair: Boolean = true,
+  bpd: boom.fdip.ifu.bpd.BoomBpdParams = boom.fdip.ifu.bpd.BoomBpdParams(),
   useAtomicsOnlyForIO: Boolean = false,
   ftq: boom.fdip.ifu.FtqParameters = boom.fdip.ifu.FtqParameters(),
   // FDIPftq: boom.fdip.ifu.FDIPFtqParameters = boom.fdip.ifu.FDIPFtqParameters(),

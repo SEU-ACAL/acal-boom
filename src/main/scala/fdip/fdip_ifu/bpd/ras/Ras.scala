@@ -3,7 +3,7 @@
 // All Rights Reserved. See LICENSE and LICENSE.SiFive for license details.
 //------------------------------------------------------------------------------
 
-package boom.fdip.ifu
+package boom.fdip.ifu.bpd.ras
 
 import chisel3._
 import chisel3.util._
@@ -21,8 +21,9 @@ import freechips.rocketchip.util.property._
 import boom.fdip.common._
 import boom.fdip.exu.{CommitExceptionSignals, BranchDecode, BrUpdateInfo}
 import boom.fdip.util._
+import boom.fdip.ifu._
 
-class BoomRAS(implicit p: Parameters) extends BoomModule()(p)
+class BoomRAS(implicit p: Parameters) extends RasModule()(p)
 {
   val io = IO(new Bundle {
     val read_idx   = Input(UInt(log2Ceil(nRasEntries).W))

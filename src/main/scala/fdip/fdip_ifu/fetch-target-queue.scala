@@ -26,6 +26,14 @@ import boom.fdip.common._
 import boom.fdip.util._
 import boom.fdip.exu._
 import boom.fdip.util._
+import boom.fdip.ifu.bpd.{
+  BranchPredictionMeta,
+  BranchPredictionRespBundle,
+  BranchPredictionUpdate,
+  BtbTrain,
+  ResolvedCfi,
+  TageCommitTrain
+}
 import freechips.rocketchip.tilelink.TLMessages.isA
 import os.write.over
 import freechips.rocketchip.regmapper.RRTest0Map.re
@@ -168,6 +176,8 @@ class FTQToBPUIO(implicit p: Parameters) extends BoomBundle
   val redirect_ftq_idx= Output(UInt((log2Ceil(ftqSz)+1).W)) 
   val redirect_ghist  = Output(new GlobalHistory)
   val redirect_btb_repair = Output(Bool())
+  val btbTrain = Output(Valid(new BtbTrain))
+  val tageCommitTrain = Output(Valid(new TageCommitTrain))
   val bpdupdate = Output(Valid(new BranchPredictionUpdate))
 
   val ras_update = Output(Bool())
@@ -215,6 +225,10 @@ class FTQToIfuIO(implicit p: Parameters) extends BoomBundle
  * processor.
  *
  * @param num_entries # of entries in the FTQ
+ */
+
+/*
+
  */
 class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   with HasBoomCoreParameters
@@ -534,6 +548,46 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   io.toBPU.ftq_idx := bpu_ptr
   io.toBPU.bpdupdate:=DontCare
   val cfi_idx = bpd_update_entry.cfi_idx.bits
+
+  val update_cfi = Wire(new ResolvedCfi)
+  update_cfi.valid      := bpd_update_entry.cfi_idx.valid
+  update_cfi.position   := bpd_update_entry.cfi_idx.bits
+  update_cfi.taken      := bpd_update_entry.cfi_taken
+  update_cfi.target     := bpd_update_target
+  update_cfi.mispredict := bpd_update_entry.cfi_mispredicted
+  update_cfi.attribute.branchType := Mux(bpd_update_entry.cfi_type === CFI_BR,
+    BranchAttribute.BranchType.Conditional,
+    Mux(bpd_update_entry.cfi_type === CFI_JAL,
+      BranchAttribute.BranchType.Direct,
+      Mux(bpd_update_entry.cfi_type === CFI_JALR,
+        BranchAttribute.BranchType.Indirect,
+        BranchAttribute.BranchType.None)))
+  update_cfi.attribute.rasAction := Mux(bpd_update_entry.cfi_is_call && bpd_update_entry.cfi_is_ret,
+    BranchAttribute.RasAction.PopAndPush,
+    Mux(bpd_update_entry.cfi_is_call,
+      BranchAttribute.RasAction.Push,
+      Mux(bpd_update_entry.cfi_is_ret,
+        BranchAttribute.RasAction.Pop,
+        BranchAttribute.RasAction.None)))
+
+  val update_br_mask = Mux(update_cfi.valid,
+    MaskLower(UIntToOH(update_cfi.position)) & bpd_update_entry.br_mask,
+    bpd_update_entry.br_mask)
+
+  io.toBPU.btbTrain.valid       := bpd_update_commit && update_cfi.valid
+  io.toBPU.btbTrain.bits.startPc := bpd_update_pc
+  io.toBPU.btbTrain.bits.cfi     := update_cfi
+  io.toBPU.btbTrain.bits.meta    := bpd_update_meta.btb
+
+  io.toBPU.tageCommitTrain.valid       := bpd_update_commit &&
+    (update_cfi.valid || update_br_mask =/= 0.U)
+  io.toBPU.tageCommitTrain.bits.startPc := bpd_update_pc
+  io.toBPU.tageCommitTrain.bits.ghist   := bpd_update_ghist
+  io.toBPU.tageCommitTrain.bits.brMask  := update_br_mask
+  io.toBPU.tageCommitTrain.bits.cfi     := update_cfi
+  io.toBPU.tageCommitTrain.bits.btbMeta := bpd_update_meta.btb
+  io.toBPU.tageCommitTrain.bits.meta    := bpd_update_meta.tage
+
   io.toBPU.bpdupdate.valid                     := bpd_update_commit && (bpd_update_entry.cfi_idx.valid || bpd_update_entry.br_mask =/= 0.U)
   //TODO: add repair update
   io.toBPU.bpdupdate.bits.is_mispredict_update := !bpd_update_commit
@@ -541,8 +595,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   io.toBPU.bpdupdate.bits.is_repair_update     := false.B
   io.toBPU.bpdupdate.bits.pc                   := bpd_update_pc
   io.toBPU.bpdupdate.bits.btb_mispredicts      := 0.U
-  io.toBPU.bpdupdate.bits.br_mask              := Mux(bpd_update_entry.cfi_idx.valid,
-    MaskLower(UIntToOH(cfi_idx)) & bpd_update_entry.br_mask, bpd_update_entry.br_mask)
+  io.toBPU.bpdupdate.bits.br_mask              := update_br_mask
   io.toBPU.bpdupdate.bits.cfi_idx              := bpd_update_entry.cfi_idx
   io.toBPU.bpdupdate.bits.cfi_mispredicted     := bpd_update_entry.cfi_mispredicted
   io.toBPU.bpdupdate.bits.cfi_taken            := bpd_update_entry.cfi_taken

@@ -26,6 +26,7 @@ import freechips.rocketchip.util.property._
 import boom.fdip.common._
 import boom.fdip.exu.{CommitExceptionSignals, BranchDecode, BrUpdateInfo, BranchDecodeSignals}
 import boom.fdip.util._
+import boom.fdip.ifu.bpd.BranchPredictor
 // import boom.fdip.ifu._
 class BranchAttribute extends Bundle {
   val branchType: UInt = UInt(2.W)
