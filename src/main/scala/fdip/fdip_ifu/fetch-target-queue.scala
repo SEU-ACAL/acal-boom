@@ -191,10 +191,7 @@ class FTQToPrefetchIO(implicit p: Parameters) extends BoomBundle
   val mask      = UInt(fetchWidth.W)
 }
 
-class BPUToFTQIO(implicit p: Parameters) extends BoomBundle
-{
-  val resp = DecoupledIO(new BranchPredictionRespBundle)
-}
+
 class BPUFlushInfo(implicit p: Parameters) extends BoomBundle
 {
   val s2_redirect = Valid(UInt((log2Ceil(ftqSz)+1).W))

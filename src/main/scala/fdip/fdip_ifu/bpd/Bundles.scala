@@ -80,16 +80,11 @@ class Train(implicit p: Parameters) extends BoomBundle()(p)
   val ghist    = new GlobalHistory
 }
 
-class BranchPredictionMeta(
-  microBtbParams: BoomFAMicroBTBParams = BoomFAMicroBTBParams(),
-  btbParams: BoomL1BTBParams = BoomL1BTBParams(),
-  tageParams: BoomTageParams = BoomTageParams()
-)(implicit p: Parameters) extends BoomBundle()(p)
-  with HasBoomFrontendParameters
+class BranchPredictionMeta(implicit p: Parameters) extends BoomBundle()(p)
+  with HasBpdParameters
 {
-  val tage = new boom.fdip.ifu.bpd.tage.TagePredictMeta(tageParams.tableInfo.size)
-  val btb  = Vec(btbParams.nWays,
-    Valid(new boom.fdip.ifu.bpd.l1btb.BTBPredictMeta()))
+  val tage = new TagePredictMeta(tageParameters.tableInfo.size)
+  val btb  = Vec(l1btbParameters.nWays,Valid(new BTBPredictMeta()))
 }
 
 class BranchPredictionLiteBundle(implicit p: Parameters) extends BoomBundle()(p)
@@ -100,9 +95,10 @@ class BranchPredictionLiteBundle(implicit p: Parameters) extends BoomBundle()(p)
   val hasRedirect = Bool()
   val ftq_idx     = UInt((log2Ceil(ftqSz) + 1).W)
   val ghist       = new GlobalHistory
-  val preds       = Vec(predWidth, new Prediction)
+  val pred        = new Prediction
   val meta        = Output(new BranchPredictionMeta)
-  val lhist       = Output(UInt(localHistoryLength.W))
+  val rasState    = new RasState
+  // val lhist       = Output(UInt(localHistoryLength.W))
 
   def predTakenVec = WireInit(VecInit((0 until predWidth) map { i =>
     valid && fetchMask(pc)(i) && preds(i).predicted_pc.valid &&
@@ -138,22 +134,24 @@ class BranchPredictionLiteBundle(implicit p: Parameters) extends BoomBundle()(p)
   }
 }
 
+
+
 class BranchPredictionRespBundle(implicit p: Parameters) extends BoomBundle()(p)
   with HasBoomFrontendParameters
 {
   val f1 = new BranchPredictionLiteBundle
   val f2 = new BranchPredictionLiteBundle
-  val f3 = new BranchPredictionLiteBundle
-  val f3_pred_target = Output(UInt(vaddrBitsExtended.W))
-  val f3_ras_top = Output(UInt(vaddrBitsExtended.W))
+  // val f3 = new BranchPredictionLiteBundle
+  val f2_pred_target = Output(UInt(vaddrBitsExtended.W))
+  val f2_ras_top = Output(UInt(vaddrBitsExtended.W))
 
   def selectedResp = PriorityMux(Seq(
-    (f3.valid && f3.hasRedirect) -> f3,
+    // (f3.valid && f3.hasRedirect) -> f3,
     (f2.valid && f2.hasRedirect) -> f2,
     f1.valid -> f1))
 
   def selectedRespIdxForFtq = PriorityMux(Seq(
-    (f3.valid && f3.hasRedirect) -> BP_S3,
+    // (f3.valid && f3.hasRedirect) -> BP_S3,
     (f2.valid && f2.hasRedirect) -> BP_S2,
     f1.valid -> BP_S1))
 
@@ -175,13 +173,18 @@ class BranchPredictionRespBundle(implicit p: Parameters) extends BoomBundle()(p)
     res.is_exit_branch := brMask.reduce(_ || _)
     res.is_exit_taken := selectedResp.predTakenVec.reduce(_ || _)
     res.exit_pc_offset := PriorityEncoder(selectedResp.predTakenVec)
-    res.target := Mux(f3.valid && f3.hasRedirect, f3_pred_target, predictedTarget)
+    res.target := Mux(f2.valid && f2.hasRedirect, f2_pred_target, predictedTarget)
     res.start_pc := selectedResp.pc
     res.mask := fetchMask(res.start_pc) & MaskLower(UIntToOH(res.exit_pc_offset))
     res
   }
 
-  def lastStage = f3
+  def lastStage = f2
+}
+
+class BPUToFTQIO(implicit p: Parameters) extends BoomBundle
+{
+  val resp = DecoupledIO(new BranchPredictionRespBundle)
 }
 
 class BranchPredictionUpdate(implicit p: Parameters) extends BoomBundle()(p)

@@ -172,59 +172,6 @@ class FrontendResp(implicit p: Parameters) extends BoomBundle()(p) {
   val tsrc = UInt(BSRC_SZ.W)
 }
 
-class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
-  with HasBoomFrontendParameters
-{
-  // For the dual banked case, each bank ignores the contribution of the
-  // last bank to the history. Thus we have to track the most recent update to the
-  // history in that case
-  val old_history = UInt(globalHistoryLength.W)
-
-  val current_saw_branch_not_taken = Bool()
-
-  val new_saw_branch_not_taken = Bool()
-  val new_saw_branch_taken     = Bool()
-
-  val ras_idx = UInt(log2Ceil(nRasEntries).W)
-
-  def histories = {
-    old_history
-  }
-
-  def ===(other: GlobalHistory): Bool = {
-    ((old_history === other.old_history) &&
-     (new_saw_branch_not_taken === other.new_saw_branch_not_taken) &&
-     (new_saw_branch_taken === other.new_saw_branch_taken)
-    )
-  }
-  def =/=(other: GlobalHistory): Bool = !(this === other)
-
-  def update(branches: UInt, cfi_taken: Bool, cfi_is_br: Bool, cfi_idx: UInt,
-    cfi_valid: Bool, addr: UInt,
-    cfi_is_call: Bool, cfi_is_ret: Bool): GlobalHistory = {
-    val cfi_idx_fixed = cfi_idx(log2Ceil(fetchWidth)-1,0)
-    val cfi_idx_oh = UIntToOH(cfi_idx_fixed)
-    val new_history = Wire(new GlobalHistory)
-
-    //这个更新条件是否正确，会去更新BTB内部从来没有的分支？
-    val not_taken_branches = branches & Mux(cfi_valid,
-                                            MaskLower(cfi_idx_oh) & ~Mux(cfi_is_br && cfi_taken, cfi_idx_oh, 0.U(fetchWidth.W)),
-                                            ~(0.U(fetchWidth.W)))
-
-      // In the single bank case every bank sees the history including the previous bank
-    new_history := DontCare
-    // new_history.current_saw_branch_not_taken := false.B
-    val saw_not_taken_branch = not_taken_branches =/= 0.U 
-    new_history.old_history := Mux(cfi_is_br && cfi_taken && cfi_valid    , histories << 1 | 1.U,
-                                Mux(saw_not_taken_branch                  , histories << 1,
-                                                                            histories))
-
-    new_history.ras_idx := Mux(cfi_valid && cfi_is_call, WrapInc(ras_idx, nRasEntries),
-                           Mux(cfi_valid && cfi_is_ret , WrapDec(ras_idx, nRasEntries), ras_idx))
-    new_history
-  }
-
-}
 
 /**
  * Parameters to manage a L1 Banked ICache
