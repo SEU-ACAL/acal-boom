@@ -42,7 +42,7 @@ class TagePredictMeta(val nTables: Int)(implicit p: Parameters) extends TageBund
   val alt_differs  = Vec(predWidth, Bool())
   val provider_u   = Vec(predWidth, UInt(2.W))
   val provider_ctr = Vec(predWidth, UInt(3.W))
-  val allocate     = Vec(predWidth, Valid(UInt(log2Ceil(nTables).W)))
+  val allocate     = Vec(predWidth, Valid(UInt((nTables).W)))
 }
 
 class TagePrediction(implicit p: Parameters) extends TageBundle()(p) {

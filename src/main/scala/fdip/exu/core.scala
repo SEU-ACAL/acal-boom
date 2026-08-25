@@ -434,9 +434,10 @@ val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
     io.ifu.redirect_flush := true.B
     val flush_typ = RegNext(rob.io.flush.bits.flush_typ)
     // Clear the global history when we flush the ROB (exceptions, AMOs, unique instructions, etc.)
+    // TODO： fix ghist and ras
     val new_ghist = WireInit((0.U).asTypeOf(new GlobalHistory))
-    new_ghist.current_saw_branch_not_taken := true.B
-    new_ghist.ras_idx := io.ifu.get_pc(0).entry.ras_idx
+    // new_ghist.current_saw_branch_not_taken := true.B
+    // new_ghist.ras_idx := io.ifu.get_pc(0).entry.ras_idx
     io.ifu.redirect_ghist := new_ghist
     when (FlushTypes.useCsrEvec(flush_typ)) {
       io.ifu.redirect_pc  := Mux(flush_typ === FlushTypes.eret,
@@ -471,22 +472,13 @@ val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
     val ftq_entry = io.ifu.get_pc(1).entry
     val cfi_idx = brupdate.b2.uop.pc_lob 
     val ftq_ghist = io.ifu.get_pc(1).ghist
-    val next_ghist = ftq_ghist.update(
-      ftq_entry.br_mask.asUInt,
-      brupdate.b2.taken,
-      brupdate.b2.cfi_type === CFI_BR,
-      cfi_idx,
-      true.B,
-      io.ifu.get_pc(1).pc,
-      ftq_entry.cfi_is_call && ftq_entry.cfi_idx.bits === cfi_idx,
-      ftq_entry.cfi_is_ret  && ftq_entry.cfi_idx.bits === cfi_idx)
-
+    //TODO: fix ghist and ras
+    val next_ghist = ftq_ghist
 
     io.ifu.redirect_ghist   := Mux(
       use_same_ghist,
       ftq_ghist,
       next_ghist)
-    io.ifu.redirect_ghist.current_saw_branch_not_taken := use_same_ghist
   } .elsewhen (rob.io.flush_frontend || brupdate.b1.mispredict_mask =/= 0.U) {
     io.ifu.redirect_flush   := true.B
   }

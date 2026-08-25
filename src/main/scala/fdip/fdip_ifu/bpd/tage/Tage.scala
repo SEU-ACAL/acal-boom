@@ -74,6 +74,7 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
 
 
   val io = IO(new TagePredictorIO)
+  val tageNTables = TageTables
   val tables = params.tableInfo map {
     case (n, l, s) => {
       val t = Module(new TageTable(n, s, l, params.uBitPeriod))
@@ -116,6 +117,12 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
   val s1_pc        = RegNext(s0_pc)
 
 	val tableResults = Wire(Vec(tables.size, Valid(new TageTableReadResp())))
+
+  io.tage_pred.taken.foreach { x =>
+    x.valid := false.B
+    x.bits := false.B
+  }
+  io.meta := 0.U.asTypeOf(io.meta)
   def inc_u(u: UInt, inc: Bool): UInt = {
     Mux(inc, Mux(u === 3.U, 3.U, u + 1.U), u)
   }
@@ -130,13 +137,13 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
 
   val s1_ghist = RegNext(io.s0_ghist)
 	// s1_tag[btbNways][nTables] tag计算
-	val s1_tag = io.fromBtb.s1_position.map{btb=>
-		tableResults.map{t=>
+	val s1_tag = WireInit(VecInit(io.fromBtb.s1_position.map{btb=>
+		VecInit(tableResults.zipWithIndex.map{case(res,idx)=>
 			//TODO：优化这里的路径
-			val (idx, tag) = compute_tag_and_hash(s1_idx, s1_ghist, params.tableInfo(i)._3, params.tableInfo(i)._1, params.tableInfo(i)._2)
-			tag ^ btb.bits.cfiPosition
-		}
-	}
+			val (hash_idx, hash_tag) = compute_tag_and_hash(s1_idx, s1_ghist, params.tableInfo(idx)._3, params.tableInfo(idx)._1, params.tableInfo(idx)._2)
+			hash_tag ^ btb
+		})
+	}))
 
 	val s2_tageResults = RegNext(tableResults)
 	val s2_tag = RegNext(s1_tag)
@@ -144,15 +151,15 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
 
 	s2_results.zipWithIndex.foreach { case (branch, i) =>
 		val position =  branch.bits.cfiPosition
-		val hitMask = s2_tageResults.zipWithIndex.map{case(res,idx)=>
-			res.valid && res.bits.tag === s2_tag(idx)
-		}
+		val hitMask = VecInit(s2_tageResults.zipWithIndex.map{case(res,idx)=>
+			res.valid && res.bits.tag === s2_tag(i)(idx)
+		})
     val hasProvider = hitMask.reduce(_||_)
     val providerOH = PriorityEncoderOH(hitMask.reverse).reverse
     val providerIdx = OHToUInt(providerOH)
     val providerEntry = Mux1H(providerOH, s2_tageResults.map(_.bits))
 
-    val hitWithoutProviderMask = hitMask.zip(providerOH).map{case(h,p)=>h && !p}
+    val hitWithoutProviderMask = VecInit(hitMask.zip(providerOH).map{case(h,p)=>h && !p})
     val hasAlt = hasProvider && hitWithoutProviderMask.reduce(_||_)
     val altOH = PriorityEncoderOH(hitWithoutProviderMask.reverse).reverse
     val altIdx = OHToUInt(altOH)
@@ -162,18 +169,18 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
     val providerTaken = providerEntry.ctr(2)
     val altOrBasePred = Mux(hasAlt, altEntry.ctr(2), branch.bits.taken)
 
-    val preAllocTableMask = s2_tageResults.zipWithIndex.map{case(res,idx)=>
-      (!res.valid || res.bits.u === 0.U && (res.bits.ctr === 3.U || res.bits.ctr === 4.U)) && (idx > providerIdx) 
-    }
-    io.tage_pred(i).taken.valid := useProvider || hasAlt
-    io.tage_pred(i).taken.bits := Mux(useProvider, providerTaken, altEntry.ctr(2))
-    io.meta.provider(w).valid := hasProvider
-    io.meta.provider(w).bits  := providerOH
-    io.meta.alt_differs(w)    := altOrBasePred =/= providerTaken
-    io.meta.provider_u(w)     := providerEntry.bits.u
-    io.meta.provider_ctr(w)   := providerEntry.bits.ctr
-    io.meta.allocate(w).valid := preAllocTableMask.reduce(_||_)
-    io.meta.allocate(w).bits  := preAllocTableMask
+    val preAllocTableMask = WireInit(VecInit(s2_tageResults.zipWithIndex.map{case(res,idx)=>
+      (!res.valid || res.bits.u === 0.U && (res.bits.ctr === 3.U || res.bits.ctr === 4.U)) && (idx.U > providerIdx) 
+    }))
+    io.tage_pred.taken(i).valid := useProvider || hasAlt
+    io.tage_pred.taken(i).bits := Mux(useProvider, providerTaken, altEntry.ctr(2))
+    io.meta.provider(i).valid := hasProvider
+    io.meta.provider(i).bits  := OHToUInt(providerOH) 
+    io.meta.alt_differs(i)    := altOrBasePred =/= providerTaken
+    io.meta.provider_u(i)     := providerEntry.u
+    io.meta.provider_ctr(i)   := providerEntry.ctr
+    io.meta.allocate(i).valid := preAllocTableMask.reduce(_||_)
+    io.meta.allocate(i).bits  := preAllocTableMask.asUInt
 	}
 
 
@@ -194,8 +201,17 @@ Train Stage
   // val t0_providerOH = t0_tageMeta.provider(t0_cfi.position)
 
   val tageUBitPeriod = TageUsefulPeriod
-  val tageNTables    = TageTables
-  val (t0_hashIdx, t0_hashTag) = compute_tag_and_hash(t0_idx, t0_ghist, params.tableInfo(i)._3, params.tableInfo(i)._1, params.tableInfo(i)._2)
+  val t0_hash = (0 until tageNTables).map { tableIdx =>
+    compute_tag_and_hash(
+      t0_idx,
+      t0_ghist.histories,
+      params.tableInfo(tableIdx)._3,
+      params.tableInfo(tableIdx)._1,
+      params.tableInfo(tableIdx)._2
+    )
+  }
+  val t0_hashIdx = VecInit(t0_hash.map(_._1))
+  val t0_hashTag = VecInit(t0_hash.map(_._2))
     /* 
     mispred的项: 首先看是否hitBTB，如果hit 并且有provider
       1. 如果provider是最长的，那么不需要allocate
@@ -209,21 +225,19 @@ Train Stage
 
     allocate和正常更新的table撞了如何解决?
      */
-    val t0_mispredHitTableMask = t0_btbMeta.results.zipWithIndex.map{case(btb,btbIdx)=>
-      val mispredHit = btb.valid && btb.bits.hit  && btb.attribute.isConditional
-          && t0_cfi.valid && t0_cfi.attribute.isConditional 
-          && t0_cfi.mispredict && (btb.bits.cfiPosition === t0_cfi.position)
+    val t0_mispredHitTableMask = t0_btbMeta.zipWithIndex.map{case(btb,btbIdx)=>
+      val mispredHit = btb.valid && btb.bits.hit  && btb.bits.attribute.isConditional&& 
+        t0_cfi.valid && t0_cfi.attribute.isConditional && 
+        t0_cfi.mispredict && (btb.bits.position === t0_cfi.position)
       mispredHit
     }
     val t0_mispredHitTableMetaIdx = PriorityEncoder(t0_mispredHitTableMask)
     val t0_mispredHitTableMeta = t0_tageMeta.provider(t0_mispredHitTableMetaIdx)
     val t0_mispredHasProvider = t0_mispredHitTableMask.reduce(_||_) && t0_mispredHitTableMeta.valid
-    val t0_mispredHasProvider = t0_mispredHitTableMask.reduce(_||_) && t0_mispredHitTableMeta.valid
     //provider是不是最长的，此时无法分配
     val t0_providerIsLongest = t0_mispredHasProvider && (t0_mispredHitTableMeta.bits === TageTables.U)
     //TODO:allocate 算法可以优化
-    val t0_needAllocate = t0_cfi.valid && t0_cfi.attribute.isConditional && t0_cfi.mispredict 
-        && !t0_providerIsLongest 
+    val t0_needAllocate = t0_cfi.valid && t0_cfi.attribute.isConditional && t0_cfi.mispredict && !t0_providerIsLongest 
     val t0_canAllocate = t0_tageMeta.allocate(t0_cfi.position).valid || !t0_mispredHitTableMask.reduce(_||_)
     val t0_allocateTableIdx = Mux(t0_mispredHitTableMask.reduce(_||_), t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).bits, 0.U)
 
@@ -231,40 +245,57 @@ Train Stage
     CTR taken 111 和NT 000都不更新
     br_mask 可以得到不taken cfi可以得到taken 信息
      */
-    val (t0_providerUpdateNeed, t0_providerUpdateInc, t0_providerUpdateUseful, t0_hitBtbVec , t0_hitPosition) = (0 until tageNTables).map{i=>
+    val t0_providerUpdateInfo = (0 until tageNTables).map{i=>
       
-      val (needUpdateCtr, incCtr, updateUseful, hits) = t0_tageMeta.provider.zip(t0_btbMeta.results).zipWithIndex.map{case((p,btb),idx)=>
+      val updateInfo = t0_tageMeta.provider.zip(t0_btbMeta).zipWithIndex.map{case((p,btb),idx)=>
         
-        val normalHit = p.valid && p.bits === i.U && btb.valid && btb.bits.hit 
-        && btb.bits.attribute.isConditional && t0_cfi.position =/= btb.bits.cfiPosition
-        val endCfiHit = p.valid && p.bits === i.U && t0_cfi.valid && p.valid
-        && t0_cfi.position === btb.bits.cfiPosition
+        val normalHit = p.valid && p.bits === i.U && btb.valid && btb.bits.hit && 
+          btb.bits.attribute.isConditional && t0_cfi.position =/= btb.bits.position
+        val endCfiHit = p.valid && p.bits === i.U && t0_cfi.valid && p.valid&& 
+          t0_cfi.position === btb.bits.position
         
         val normalNeedUpdateCtr =normalHit && t0_tageMeta.provider_ctr(idx) =/= 0.U 
         val normalIncCtr = !normalNeedUpdateCtr   
 
-        val endCfiNeedUpdateCtr =  endCfiHit
-        && !(t0_tageMeta.provider_ctr(idx) === 7.U && t0_cfi.bits.taken 
-        || t0_tageMeta.provider_ctr(idx) === 0.U && !t0_cfi.bits.taken)
-        val endCfiIncCtr = endCfiNeedUpdateCtr && t0_cfi.bits.taken
+        val endCfiNeedUpdateCtr =  endCfiHit && 
+        !(t0_tageMeta.provider_ctr(idx) === 7.U && t0_cfi.taken || 
+        t0_tageMeta.provider_ctr(idx) === 0.U && !t0_cfi.taken)
+        val endCfiIncCtr = endCfiNeedUpdateCtr && t0_cfi.taken
 
 
         //normal默认是不taken
-        val normalNeedUpdateUseful = p.valid && p.bits === i.U && btb.valid && btb.bits.hit 
-        && t0_tageMeta.alt_differs(idx) && t0_cfi.position =/= btb.bits.cfiPosition 
-        && !t0_tageMeta.provider_u(idx) === 3.U
+        val normalNeedUpdateUseful = p.valid && p.bits === i.U && btb.valid && btb.bits.hit && 
+        t0_tageMeta.alt_differs(idx) && t0_cfi.position =/= btb.bits.position && 
+        !t0_tageMeta.provider_u(idx) === 3.U
         //endcfi
-        val endCfiNeedUpdateUseful = p.valid && p.bits === i.U && t0_cfi.valid && p.valid
-        && t0_cfi.position === btb.bits.cfiPosition && t0_tageMeta.alt_differs(idx) && t0_tageMeta.provider_ctr(idx)(2) === t0_cfi.bits.taken
-        && !t0_tageMeta.provider_u(idx) === 3.U
-        val endCfiIncCtr = endCfiNeedUpdateCtr && t0_cfi.bits.taken
+        val endCfiNeedUpdateUseful = p.valid && p.bits === i.U && t0_cfi.valid && p.valid && 
+        t0_cfi.position === btb.bits.position && t0_tageMeta.alt_differs(idx) && t0_tageMeta.provider_ctr(idx)(2) === t0_cfi.taken && 
+        !t0_tageMeta.provider_u(idx) === 3.U
+        
 
-        (endCfiNeedUpdataCtr || normalNeedUpdateCtr , endCfiIncCtr || normalIncCtr , endCfiNeedUpdateUseful || normalNeedUpdateUseful, normalHit || endCfiHit)
+        (endCfiNeedUpdateCtr || normalNeedUpdateCtr , endCfiIncCtr || normalIncCtr , endCfiNeedUpdateUseful || normalNeedUpdateUseful, normalHit || endCfiHit)
       }
-      val hitPosition = Mux1H(hits, t0_btbMeta.results.map(_.bits.cfiPosition))
+      val needUpdateCtr = VecInit(updateInfo.map(_._1))
+      val incCtr        = VecInit(updateInfo.map(_._2))
+      val updateUseful  = VecInit(updateInfo.map(_._3))
+      val hits             = VecInit(updateInfo.map(_._4))
+      val hitPosition = Mux1H(hits, t0_btbMeta.map(_.bits.position))
       (needUpdateCtr.reduce(_||_), incCtr.reduce(_||_), updateUseful.reduce(_||_),hits, hitPosition)
     }
+    val t0_providerUpdateNeed =
+      VecInit(t0_providerUpdateInfo.map(_._1))
 
+    val t0_providerUpdateInc =
+      VecInit(t0_providerUpdateInfo.map(_._2))
+
+    val t0_providerUpdateUseful =
+      VecInit(t0_providerUpdateInfo.map(_._3))
+
+    val t0_hitBtbVec =
+      t0_providerUpdateInfo.map(_._4)
+
+    val t0_hitPosition =
+      VecInit(t0_providerUpdateInfo.map(_._5))
     for (i <- 0 until tageNTables) {
       val writeEntryEn = t0_valid && (t0_providerUpdateNeed(i) || (t0_needAllocate && t0_allocateTableIdx === i.U))
       val alloc = (t0_needAllocate && t0_canAllocate && t0_allocateTableIdx === i.U)
@@ -276,13 +307,12 @@ Train Stage
       val hitNewU = inc_u(hitTageU, t0_providerUpdateUseful(i))
 
       tables(i).io.writeReq.valid := t0_valid && (t0_providerUpdateNeed(i) || alloc) 
-      tables(i).io.writeReq.bits.setIdx       := t0_hashIdx
+      tables(i).io.writeReq.bits.setIdx       := t0_hashIdx(i)
       tables(i).io.writeReq.bits.writeEntry   := writeEntryEn
-      tables(i).io.writeReq.bits.writeUseful  := t0_providerUpdateUseful
+      tables(i).io.writeReq.bits.writeUseful  := t0_providerUpdateUseful(i)
       tables(i).io.writeReq.bits.entry.valid  := writeEntryEn
-      tables(i).io.writeReq.bits.entry.tag    := t0_hashTag ^ Mux(alloc,t0_cfi.position, hitPostion)
-      tables(i).io.writeReq.bits.entry.ctr    := Mux(alloc, Cat(t0_cfi.bits.taken,0.U(2.W)),hitNewCtr)
-      tables(i).io.writeReq.bits.entry.u      := Mux(alloc, 0.U(2.W), hitNewU)
+      tables(i).io.writeReq.bits.entry.tag    := t0_hashTag(i) ^ Mux(alloc,t0_cfi.position, hitPostion)
+      tables(i).io.writeReq.bits.entry.ctr    := Mux(alloc, Cat(t0_cfi.taken,0.U(2.W)),hitNewCtr)
+      tables(i).io.writeReq.bits.u      := Mux(alloc, 0.U(2.W), hitNewU)
     }
 }
-

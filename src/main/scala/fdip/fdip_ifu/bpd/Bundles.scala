@@ -10,7 +10,9 @@ import boom.fdip.ifu._
 import boom.fdip.ifu.bpd.l1btb.BoomL1BTBParams
 import boom.fdip.ifu.bpd.ubtb.BoomFAMicroBTBParams
 import boom.fdip.ifu.bpd.tage.BoomTageParams
-
+import boom.fdip.ifu.bpd.tage.TagePredictMeta
+import boom.fdip.ifu.bpd.l1btb.BTBPredictMeta
+import boom.fdip.ifu.bpd.ras.RasState
 class Prediction(implicit p: Parameters) extends BoomBundle()(p)
   with HasBoomFrontendParameters
 {
@@ -100,38 +102,25 @@ class BranchPredictionLiteBundle(implicit p: Parameters) extends BoomBundle()(p)
   val rasState    = new RasState
   // val lhist       = Output(UInt(localHistoryLength.W))
 
-  def predTakenVec = WireInit(VecInit((0 until predWidth) map { i =>
-    valid && fetchMask(pc)(i) && preds(i).predicted_pc.valid &&
-    (preds(i).is_jal || preds(i).is_jalr || preds(i).is_call || preds(i).is_ret ||
-      (preds(i).is_br && preds(i).taken))
-  }))
 
-  def predTarget = {
-    val takenIdx = PriorityEncoder(predTakenVec)
-    val targets = VecInit(preds.map(_.predicted_pc.bits))
-    Mux(predTakenVec(takenIdx), targets(takenIdx), nextFetch(pc))
-  }
 
+
+  //TODO: fix it
   def predGhist = {
-    val takenIdx = PriorityEncoder(predTakenVec)
-    val isBr = WireInit(VecInit(preds.map(p => p.is_br && p.predicted_pc.valid)))
-    ghist.update(
-      isBr.asUInt & fetchMask(pc),
-      preds(takenIdx).taken && predTakenVec.reduce(_ || _),
-      preds(takenIdx).is_br,
-      takenIdx,
-      predTakenVec.reduce(_ || _),
-      pc,
-      false.B,
-      false.B)
+    // val takenIdx = PriorityEncoder(predTakenVec)
+    // val isBr = WireInit(VecInit(preds.map(p => p.is_br && p.predicted_pc.valid)))
+    // // ghist.update(
+    // //   isBr.asUInt & fetchMask(pc),
+    // //   preds(takenIdx).taken && predTakenVec.reduce(_ || _),
+    // //   preds(takenIdx).is_br,
+    // //   takenIdx,
+    // //   predTakenVec.reduce(_ || _),
+    // //   pc,
+    // //   false.B,
+    // //   false.B)
+    ghist
   }
 
-  def cfi_offset = {
-    val offset = Wire(Valid(UInt(log2Ceil(predWidth).W)))
-    offset.valid := predTakenVec.reduce(_ || _)
-    offset.bits := PriorityEncoder(predTakenVec)
-    offset
-  }
 }
 
 
@@ -141,9 +130,6 @@ class BranchPredictionRespBundle(implicit p: Parameters) extends BoomBundle()(p)
 {
   val f1 = new BranchPredictionLiteBundle
   val f2 = new BranchPredictionLiteBundle
-  // val f3 = new BranchPredictionLiteBundle
-  val f2_pred_target = Output(UInt(vaddrBitsExtended.W))
-  val f2_ras_top = Output(UInt(vaddrBitsExtended.W))
 
   def selectedResp = PriorityMux(Seq(
     // (f3.valid && f3.hasRedirect) -> f3,
@@ -157,23 +143,11 @@ class BranchPredictionRespBundle(implicit p: Parameters) extends BoomBundle()(p)
 
   def selectedFtqentry = {
     val res = Wire(new FTQPCBundle)
-    val redirects = (0 until predWidth) map { i =>
-      selectedResp.valid && fetchMask(selectedResp.pc)(i) && selectedResp.preds(i).predicted_pc.valid &&
-      (selectedResp.preds(i).is_jal || selectedResp.preds(i).is_jalr ||
-        selectedResp.preds(i).is_call || selectedResp.preds(i).is_ret ||
-        (selectedResp.preds(i).is_br && selectedResp.preds(i).taken))
-    }
-    val redirectIdx = PriorityEncoder(redirects)
-    val doRedirect = redirects.reduce(_ || _)
-    val targets = VecInit(selectedResp.preds.map(_.predicted_pc.bits))
-    val predictedTarget = Mux(doRedirect, targets(redirectIdx), nextFetch(selectedResp.pc))
-    val brMask = WireInit(VecInit(selectedResp.preds.map(
-      p => p.is_br || p.is_jal || p.is_jalr || p.is_call || p.is_ret)))
-    val brTaken = WireInit(VecInit(selectedResp.preds.map(_.taken)))
-    res.is_exit_branch := brMask.reduce(_ || _)
-    res.is_exit_taken := selectedResp.predTakenVec.reduce(_ || _)
-    res.exit_pc_offset := PriorityEncoder(selectedResp.predTakenVec)
-    res.target := Mux(f2.valid && f2.hasRedirect, f2_pred_target, predictedTarget)
+  
+    res.is_exit_branch := !selectedResp.pred.attribute.isNone
+    res.is_exit_taken := selectedResp.pred.taken
+    res.exit_pc_offset := selectedResp.pred.cfiPosition
+    res.target := selectedResp.pred.target
     res.start_pc := selectedResp.pc
     res.mask := fetchMask(res.start_pc) & MaskLower(UIntToOH(res.exit_pc_offset))
     res

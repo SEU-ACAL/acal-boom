@@ -30,7 +30,7 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
   val s1_pc        = RegNext(s0_pc)
 
 
-  override val nEntries         = UbtbEntries
+  val nEntries         = UbtbEntries
   val tagSz         = UbtbTagWidth
   val offsetSz      = UbtbOffsetWidth
 
@@ -46,16 +46,10 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
   }
 
 
-  val s1_meta = Wire(new FAMicroBTBPredictMeta)
-
-
-  
   val btb_entries      = Reg(Vec(nEntries,new MicroBTBEntry))
 
   val s1_req_tag   = s1_idx
 
-
-  val s1_resp   = Wire(Valid(UInt(vaddrBitsExtended.W)))
 
   val s1_hit_ohs = btb_entries map { entry =>
     entry.tag === s1_req_tag(tagSz-1,0)
@@ -101,6 +95,7 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
     }
     
   val t1_update_entry = Wire(new MicroBTBEntry)
+  val t1_existing_entry = Mux(t1_hit, btb_entries(t1_hit_entry), 0.U.asTypeOf(new MicroBTBEntry))
   val t1_update_way = Mux(t1_hit, t1_hit_entry, randomWay)
   val t1_posMismatch = t1_valid && t1_hit && (btb_entries(t1_hit_entry).position =/= t1_position)
   val t1_attrMismatch = t1_valid && t1_hit && (btb_entries(t1_hit_entry).attribute.asUInt =/= t1_attribute.asUInt)
@@ -108,11 +103,7 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
   t0_hitT1Victim := t1_valid && (t0_hit_entry === t1_update_way) && t1_allocate
   t0_hitT1Update := t1_valid && (t0_tag === t1_tag) && (t1_allocate || t1_hit)
 
-  when(t1_valid && t1_hit){
-    t1_update_entry := btb_entries(t1_hit_entry)
-  }.otherwise{
-    t1_update_entry := 0.U.asTypeOf(new MicroBTBEntry)
-  }
+  t1_update_entry := t1_existing_entry
 
   when(t1_valid && !t1_hit){
     t1_update_entry.offset := (t1_target.asSInt - t0_pc.asSInt).asSInt
@@ -124,7 +115,7 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
 
   when(t1_valid && t1_hit){
     when(!t1_taken){
-      when(btb_entries(t1_hit_entry).ctr === 0.U){
+      when(btb_entries(t1_hit_entry).ctr === 0.U || t1_posMismatch || t1_attrMismatch){
         t1_update_entry.offset := (t1_target.asSInt - t0_pc.asSInt).asSInt
         t1_update_entry.attribute := t1_attribute
         t1_update_entry.position := t1_position
@@ -134,7 +125,7 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
         t1_update_entry.ctr := btb_entries(t1_hit_entry).ctr - 1.U
       }
     }.otherwise{
-      t1_update_entry.ctr := btb_entries(t1_hit_entry).ctr + 1.U
+        t1_update_entry.ctr := Mux(btb_entries(t1_hit_entry).ctr === 3.U, 3.U, btb_entries(t1_hit_entry).ctr + 1.U)
     }
   }
   when(t1_valid){
@@ -152,10 +143,10 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
         t1_update_entry.tag := t1_tag(tagSz-1,0)
         t1_update_entry.ctr := 2.U
       }.otherwise{
-        t1_update_entry.ctr := t1_update_entry.ctr - 1.U
+        t1_update_entry.ctr := btb_entries(t1_hit_entry).ctr - 1.U
       }
     }.otherwise{
-      t1_update_entry.ctr := Mux(t1_update_entry.ctr===3.U, 3.U, t1_update_entry.ctr + 1.U)
+      t1_update_entry.ctr := Mux(btb_entries(t1_hit_entry).ctr===3.U, 3.U, btb_entries(t1_hit_entry).ctr + 1.U)
     }
   }
 

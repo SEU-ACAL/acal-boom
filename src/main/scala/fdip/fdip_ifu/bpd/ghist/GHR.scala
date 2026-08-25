@@ -2,6 +2,9 @@ package boom.fdip.ifu
 
 import chisel3._
 import chisel3.util._
+import org.chipsalliance.cde.config.Parameters
+import boom.fdip.common._
+import boom.fdip.util._
 
 class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
   with HasBoomFrontendParameters
