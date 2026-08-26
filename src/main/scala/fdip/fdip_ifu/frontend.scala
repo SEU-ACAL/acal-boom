@@ -441,10 +441,10 @@ class BoomFrontendModule(outer: FDIPBoomFrontend) extends LazyModuleImp(outer)
   ftq.io.toBPU       <> bpu.io.fromFtq
   ftq.io.fromBpu     <> bpu.io.toFtq
   ftq.io.fromIfu     <> ifu.io.toFtq
-  ftq.io.fromBackend.redirect_val := io.cpu.redirect_val
-  ftq.io.fromBackend.redirect_pc  := io.cpu.redirect_pc
+  ftq.io.fromBackend.redirect_val     := io.cpu.redirect_val
+  ftq.io.fromBackend.redirect_pc      := io.cpu.redirect_pc
   ftq.io.fromBackend.redirect_ftq_idx := io.cpu.redirect_ftq_idx
-  ftq.io.fromBackend.deq := io.cpu.commit
+  ftq.io.fromBackend.deq              := io.cpu.commit
   ftq.io.fromBackend.brupdate      <> io.cpu.brupdate
   io.cpu.get_pc           <> ftq.io.toBackend.get_ftq_pc
 

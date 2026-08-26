@@ -130,6 +130,7 @@ class CTRLToFTQIO(implicit p: Parameters) extends BoomBundle
   // val redirect_target
   val redirect_pc     = Output(UInt(vaddrBitsExtended.W))
   val redirect_ftq_idx= Output(UInt((log2Ceil(ftqSz)+1).W)) 
+  // val redirect_ghist  = Output(new GlobalHistory)
 
   val deq             = Valid(UInt((log2Ceil(ftqSz)+1).W))
   val brupdate        = Output(new BrUpdateInfo)
@@ -154,7 +155,7 @@ class FTQToBPUIO(implicit p: Parameters) extends BoomBundle
   val redirect_pc     = Output(UInt(vaddrBitsExtended.W))
   val redirect_ftq_idx= Output(UInt((log2Ceil(ftqSz)+1).W)) 
   val redirect_ghist  = Output(new GlobalHistory)
-  val redirect_rasState = Output(new RasState)
+  // val redirect_rasState = Output(new RasState)
 
   val redirect_btb_repair = Output(Bool())
 
@@ -454,7 +455,8 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
 
 /* -------------------------------- fix entry ------------------------------- */
   // val br_update_entry
-//更新指针
+
+
   when(io.fromBackend.redirect_val){
     //恢复bpu_ptr
     bpu_ptr             := CirWrapInc(io.fromBackend.redirect_ftq_idx)
@@ -498,9 +500,8 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
     ifu_ptr             := CirWrapInc(io.fromIfu.redirect_ftq_idx)
     pf_ptr              := CirWrapInc(io.fromIfu.redirect_ftq_idx)
   }
-  dontTouch(do_update_commit)
-  dontTouch(bpd_update_commit)
-  dontTouch(bpd_update_entry)
+
+  
 // println(f"width${ifu_ptr.getWidth}")
   /* -------------------------------------------------------------------------- */
   /*                                  To ICache                                 */
@@ -544,15 +545,36 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   io.toBPU.train.bits.cfi     := update_cfi
   io.toBPU.train.bits.btbMeta := bpd_update_meta.btb
   io.toBPU.train.bits.tageMeta    := bpd_update_meta.tage
-  // //TODO: add repair update
 
-  //redirect (
   val ifu_redirect_entry  = RegNext(new_entry)
   ifu_redirect_ghist := bpd_update_ghist
 
-  //TODO: fix ghist and ras
-  backend_redirect_ghist := bpd_update_ghist
-  //TODO：添加predeocde的重定向 + RAS恢复
+
+  /*
+  * if redirect hit btb,use backend_hitBtbNum,otherwise use backend_hitBtbNum + 1
+  */
+  val backend_redirectPosition = Mux(io.fromBackend.brupdate.b2.uop.is_rvc,
+    io.fromBackend.brupdate.b2.uop.pc_lob/(coreInstBytes.U),io.fromBackend.brupdate.b2.uop.pc_lob/(coreInstBytes.U) + 1.U)
+  val redirect_needUpdateGhist = io.fromBackend.redirect_val && io.fromBackend.brupdate.b2.mispredict && io.fromBackend.brupdate.b2.uop.is_br
+  val backend_redirect_meta = meta(ftqMemIdx(io.fromBackend.redirect_ftq_idx))
+  val backend_redirectHitBtb = backend_redirect_meta.btb.map{meta=>
+    meta.valid && meta.bits.position === backend_redirectPosition && io.fromBackend.redirect_val &&
+    (io.fromBackend.brupdate.b2.mispredict)
+  }
+  //
+  val backend_hitBtbNum =  backend_redirect_meta.btb.map{meta=>
+    meta.valid && meta.bits.attribute.isConditional && 
+    (meta.bits.position <= backend_redirectPosition && io.fromBackend.redirect_val && 
+    (io.fromBackend.brupdate.b2.mispredict) && io.fromBackend.brupdate.b2.uop.is_br)    
+  }
+  val backend_finalHitNum = Mux(backend_redirectHitBtb.reduce(_||_),PopCount(backend_hitBtbNum),PopCount(backend_hitBtbNum) + 1.U)
+  val redirect_needUpdateGhist_r = RegNext(redirect_needUpdateGhist)
+  val backend_finalHitNum_r = RegNext(backend_finalHitNum)
+  val backend_redirect_taken_r = RegNext(io.fromBackend.brupdate.b2.taken)
+  backend_redirect_ghist := Mux(redirect_needUpdateGhist_r, bpd_update_ghist.update(backend_finalHitNum_r, backend_redirect_taken_r, redirect_needUpdateGhist_r), bpd_update_ghist)
+
+
+
   io.toBPU.redirect_val                          := RegNext(io.fromBackend.redirect_val || io.fromIfu.redirect_from_fetch)      
   io.toBPU.redirect_ftq_idx                      := RegNext(Mux(io.fromBackend.redirect_val,io.fromBackend.redirect_ftq_idx,io.fromIfu.redirect_ftq_idx))  
   io.toBPU.redirect_pc                           := RegNext(Mux(io.fromBackend.redirect_val,io.fromBackend.redirect_pc,io.fromIfu.redirect_target))  
@@ -561,9 +583,9 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   //TODO: remove this, we should not repair BTB on IFU redirect
   io.toBPU.redirect_btb_repair                   := RegNext(io.fromIfu.redirect_btb)//只有ifu的重定向才会early修复btb,其他的就是commit更新
   //RAS目前只修复由于call指令导致的错误（一般是未识别导致的）
-  io.toBPU.ras_update                            := bpd_update_mispredict && (ras_update_info.attribute.isCall)
-  io.toBPU.ras_updateState.idx                        := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).rasState.idx)
-  io.toBPU.ras_updateState.top                         := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).rasState.top)
+  io.toBPU.ras_update                                   := bpd_update_mispredict && (ras_update_info.attribute.isCall)
+  io.toBPU.ras_updateState.idx                          := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).rasState.idx)
+  io.toBPU.ras_updateState.top                          := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).rasState.top)
 
 /* -------------------------------------------------------------------------- */
 /*                                 To Prefetch                                */

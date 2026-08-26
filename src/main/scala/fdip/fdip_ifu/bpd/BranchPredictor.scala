@@ -105,7 +105,10 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   val s2_redirect       = WireInit(false.B)
   val s2_clear          = WireInit(false.B)
   val s2_ghist          = RegEnable(s1_ghist,0.U.asTypeOf(new GlobalHistory),s1_fire)
-  val s2_rasState       = RegEnable(s1_rasState,s1_fire)
+  val s2_newRasStateHold = RegInit((0.U).asTypeOf(new RasState))
+  val s2_newRasStateHoldValid = RegInit(false.B)
+  val s2_newRasState = Wire(new RasState)
+  val s2_rasState       = RegEnable(s2_newRasState,s1_fire)
   // val s2_target         = Wire(UInt(vaddrBitsExtended.W))
   val s2_tageResp = tage.io.tage_pred
   val s2_btbResp  = btb.io.resp
@@ -135,7 +138,8 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   
   val s2_btbHitNum = PopCount(s2_btbResp.map{btb=>
     btb.valid && btb.bits.attribute.isConditional &&
-    (btb.bits.cfiPosition <=s2_firstTakenBranch.bits.cfiPosition && s2_firstTakenBranch.valid ||
+    (btb.bits.cfiPosition <=s2_firstTakenBranch.bits.cfiPosition && 
+    s2_firstTakenBranch.valid && s2_firstTakenBranch.bits.attribute.isConditional ||
     !s2_taken)
   })
 
@@ -209,6 +213,20 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
 
   val s1_previous_pred_info    = RegNext(io.toFtq.resp.bits.f1)
   val f2_correct_f1_ghist     = WireInit(s2_s1_predGhist =/=  s2_predGhist&& enableGHistStallRepair.B && s2_valid)
+  // Keep a repaired RAS state until the stalled s1 packet can advance.  The
+  // repair condition is only a pulse, while s1_valid may remain asserted.
+  val s2_rasRepair = s2_redirect || f2_correct_f1_ghist
+  when (!s1_valid || s1_fire) {
+    s2_newRasStateHoldValid := false.B
+  }
+  when (s2_rasRepair && s1_valid && !s1_fire) {
+    s2_newRasStateHold      := s2_predRasState
+    s2_newRasStateHoldValid := true.B
+  }
+  s2_newRasState := Mux(
+    s2_rasRepair,
+    s2_predRasState,
+    Mux(s2_newRasStateHoldValid, s2_newRasStateHold, s1_rasState))
 
   dontTouch(s1_replay)
   dontTouch(f2_correct_f1_ghist)
@@ -237,9 +255,9 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   s0_rasState           := MuxCase((0.U).asTypeOf(new RasState),
   Seq(
     (RegNext(reset.asBool) && !reset.asBool) -> (0.U).asTypeOf(new RasState),
-    io.fromFtq.redirect_val                  -> io.fromFtq.redirect_rasState,
+    io.fromFtq.ras_update                  -> io.fromFtq.ras_updateState,
     (s2_redirect||f2_correct_f1_ghist)       -> s2_predRasState
-  ))
+  )) 
   //redirect and clear
   //其实这里还需要去做位置判断
   s2_redirect                 := io.toFtq.resp.bits.f2.valid&&(s1_previous_pred_info.valid)&&(s1_previous_pred_info.pred.target=/=io.toFtq.resp.bits.f2.pred.target)&&s2_valid
