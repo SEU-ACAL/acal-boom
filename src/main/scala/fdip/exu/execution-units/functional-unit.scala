@@ -391,7 +391,7 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
   }
   brinfo.jalr_target    := DontCare
   if (isJmpUnit) {
-    
+
     val brj_block_pc  = Wire(UInt(vaddrBitsExtended.W))//AlignPCToBoundary(io.get_ftq_pc.pc, icBlockBytes)
     brj_block_pc := AlignPCToBoundary(io.get_ftq_pc.pc, icBlockBytes)
     val brj_uop_pc    = (brj_block_pc | uop.pc_lob) 
@@ -421,18 +421,19 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
     val jalr_target = (encodeVirtualAddress(jalr_target_xlen, jalr_target_xlen).asSInt & -2.S).asUInt
 
     brinfo.jalr_target := jalr_target
-    val cfi_idx = ((uop.pc_lob ))(log2Ceil(fetchWidth),1)
+
+    val cfiPosition = Mux(uop.is_rvc, ((uop.pc_lob ))(log2Ceil(fetchWidth),1), ((uop.pc_lob ))(log2Ceil(fetchWidth),1)+1.U)
 
     when (pc_sel === PC_JALR) {
       mispredict := !io.get_ftq_pc.next_val ||
                     (io.get_ftq_pc.next_pc =/= jalr_target) ||
-                    !io.get_ftq_pc.entry.cfi_idx.valid ||
-                    (io.get_ftq_pc.entry.cfi_idx.bits =/= cfi_idx)
+                    !io.get_ftq_pc.entry.cfiPosition.valid ||
+                    (io.get_ftq_pc.entry.cfiPosition.bits =/= cfiPosition)
     }.elsewhen(pc_sel === PC_BRJMP) {
       mispredict := !io.get_ftq_pc.next_val ||
                     (io.get_ftq_pc.next_pc =/= jal_br_target) ||
-                    !io.get_ftq_pc.entry.cfi_idx.valid ||
-                    (io.get_ftq_pc.entry.cfi_idx.bits =/= cfi_idx)
+                    !io.get_ftq_pc.entry.cfiPosition.valid ||
+                    (io.get_ftq_pc.entry.cfiPosition.bits =/= cfiPosition)
     }
   } 
 

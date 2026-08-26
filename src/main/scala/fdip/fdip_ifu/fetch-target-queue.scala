@@ -468,7 +468,22 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
       bpd_redirect_entry.cfiPosition.bits     := new_cfi_idx
       bpd_redirect_entry.cfi_mispredicted := true.B
       bpd_redirect_entry.cfi_taken        := io.fromBackend.brupdate.b2.taken
-      bpd_redirect_entry.attribute         := io.fromBackend.brupdate.b2.cfi_type
+      bpd_redirect_entry.attribute.branchType := Mux(
+        io.fromBackend.brupdate.b2.cfi_type === CFI_BR,
+        BranchAttribute.BranchType.Conditional,
+        Mux(io.fromBackend.brupdate.b2.cfi_type === CFI_JAL,
+          BranchAttribute.BranchType.Direct,
+          Mux(io.fromBackend.brupdate.b2.cfi_type === CFI_JALR,
+            BranchAttribute.BranchType.Indirect,
+            BranchAttribute.BranchType.None)))
+      bpd_redirect_entry.attribute.rasAction := Mux(
+        io.fromBackend.brupdate.b2.is_call && io.fromBackend.brupdate.b2.is_ret,
+        BranchAttribute.RasAction.PopAndPush,
+        Mux(io.fromBackend.brupdate.b2.is_call,
+          BranchAttribute.RasAction.Push,
+          Mux(io.fromBackend.brupdate.b2.is_ret,
+            BranchAttribute.RasAction.Pop,
+            BranchAttribute.RasAction.None)))
     }.otherwise{
       /* 
       此时由于前端PFC，可能存储的为jal指令，但实际上，这个指令被前面的redirect打断，此时不能更新这个信息
@@ -476,9 +491,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
       bpd_redirect_entry.cfiPosition.valid    := false.B
       bpd_redirect_entry.cfi_mispredicted := false.B
     }
-    // ras_update     := true.B
-    // ras_update_pc  := redirect_entry.ras_top
-    // ras_update_idx := redirect_entry.ras_idx
+
     pd_mem(bpd_update_idx) := bpd_redirect_entry
   }.elsewhen(io.fromIfu.redirect_from_fetch){//IFU redirect do not need to fix pd_mem
     bpu_ptr             := CirWrapInc(io.fromIfu.redirect_ftq_idx)
@@ -510,7 +523,6 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
 
   //we DONT USE loop predictor
   io.toBPU.ftq_idx := bpu_ptr
-  io.toBPU.bpdupdate:=DontCare
 
 
   val update_cfi = Wire(new ResolvedCfi)
@@ -519,20 +531,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   update_cfi.taken      := bpd_update_entry.cfi_taken
   update_cfi.target     := bpd_update_target
   update_cfi.mispredict := bpd_update_entry.cfi_mispredicted
-  update_cfi.attribute.branchType := Mux(bpd_update_entry.cfi_type === CFI_BR,
-    BranchAttribute.BranchType.Conditional,
-    Mux(bpd_update_entry.cfi_type === CFI_JAL,
-      BranchAttribute.BranchType.Direct,
-      Mux(bpd_update_entry.cfi_type === CFI_JALR,
-        BranchAttribute.BranchType.Indirect,
-        BranchAttribute.BranchType.None)))
-  update_cfi.attribute.rasAction := Mux(bpd_update_entry.cfi_is_call && bpd_update_entry.cfi_is_ret,
-    BranchAttribute.RasAction.PopAndPush,
-    Mux(bpd_update_entry.cfi_is_call,
-      BranchAttribute.RasAction.Push,
-      Mux(bpd_update_entry.cfi_is_ret,
-        BranchAttribute.RasAction.Pop,
-        BranchAttribute.RasAction.None)))
+  update_cfi.attribute := bpd_update_entry.attribute
 
   val update_br_mask = Mux(update_cfi.valid,
     MaskLower(UIntToOH(update_cfi.position)) & bpd_update_entry.br_mask,
@@ -544,7 +543,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   io.toBPU.train.bits.brMask  := update_br_mask
   io.toBPU.train.bits.cfi     := update_cfi
   io.toBPU.train.bits.btbMeta := bpd_update_meta.btb
-  io.toBPU.train.bits.meta    := bpd_update_meta.tage
+  io.toBPU.train.bits.tageMeta    := bpd_update_meta.tage
   // //TODO: add repair update
 
   //redirect (
@@ -562,12 +561,14 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   //TODO: remove this, we should not repair BTB on IFU redirect
   io.toBPU.redirect_btb_repair                   := RegNext(io.fromIfu.redirect_btb)//只有ifu的重定向才会early修复btb,其他的就是commit更新
   //RAS目前只修复由于call指令导致的错误（一般是未识别导致的）
-  io.toBPU.ras_update                            := bpd_update_mispredict && (ras_update_info.cfi_is_call)
+  io.toBPU.ras_update                            := bpd_update_mispredict && (ras_update_info.attribute.isCall)
   io.toBPU.ras_updateState.idx                        := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).rasState.idx)
   io.toBPU.ras_updateState.top                         := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).rasState.top)
+
 /* -------------------------------------------------------------------------- */
 /*                                 To Prefetch                                */
 /* -------------------------------------------------------------------------- */
+
   io.toPrefetch.valid := (!isEmpty(pf_ptr,bpu_ptr)) && !(io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch)
   io.toPrefetch.bits.fetch_pc := pc_mem(ftqMemIdx(pf_ptr)).start_pc
   io.toPrefetch.bits.mask     := pc_mem(ftqMemIdx(pf_ptr)).mask

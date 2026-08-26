@@ -53,16 +53,16 @@ class FastTrain(implicit p: Parameters) extends BoomBundle()(p)
 }
 
 class Train(implicit p: Parameters) extends BoomBundle()(p)
-  with HasBoomFrontendParameters
+  with HasBpdParameters
 {
   val startPc  = UInt(vaddrBitsExtended.W)
-  val branch   = new BranchInfo
+
   val ghist   = new GlobalHistory
   val brMask  = UInt(predWidth.W)
-  val btbMeta  = Vec(BoomL1BTBParams().nWays,
-    new boom.fdip.ifu.bpd.l1btb.BTBPredictMeta())
+  val cfi     = new ResolvedCfi
+  val btbMeta = Vec(l1btbParameters.nWays,
+    Valid(new boom.fdip.ifu.bpd.l1btb.BTBPredictMeta()))
   val tageMeta = new boom.fdip.ifu.bpd.tage.TagePredictMeta(BoomTageParams().tableInfo.size)
-  val ghist    = new GlobalHistory
 }
 
 class BranchPredictionMeta(implicit p: Parameters) extends BoomBundle()(p)

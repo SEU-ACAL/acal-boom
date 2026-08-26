@@ -265,11 +265,9 @@ class FetchBundle(implicit p: Parameters) extends BoomBundle
   val shadowable_mask      = Vec(fetchWidth, Bool())
   val shadowed_mask        = Vec(fetchWidth, Bool())
 
-  val cfi_idx       = Valid(UInt(log2Ceil(fetchWidth).W))
-  val cfi_type      = UInt(CFI_SZ.W)
-  val cfi_is_call   = Bool()
-  val cfi_is_ret    = Bool()
-  val cfi_npc_plus4 = Bool()
+  val cfiPosition       = Valid(UInt(log2Ceil(fetchWidth).W))
+  val attribute      = new BranchAttribute
+
 
   // val ras_top       = UInt(vaddrBitsExtended.W)
 

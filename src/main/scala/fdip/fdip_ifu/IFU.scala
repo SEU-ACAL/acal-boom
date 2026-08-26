@@ -227,14 +227,14 @@ TODO:s2阶段如果阻塞（fb 满）并且icache hit，此时会出现问题，
   val f3_ctrl_mask      = WireInit(f3_br_mask.asUInt | f3_jal_mask.asUInt | f3_jalr_mask.asUInt)
   val f3_has_ctrl       = WireInit(f3_br_mask.reduce(_||_) || f3_jal_mask.reduce(_||_) ||  f3_jalr_mask.reduce(_||_))
   
-  def isCtrl(cfi_idx: UInt): Bool = {
-    f3_ctrl_mask(cfi_idx).asBool
+  def isCtrl(cfiPosition: UInt): Bool = {
+    f3_ctrl_mask(cfiPosition).asBool
   }
-  def isBR(cfi_idx: UInt): Bool = {
-    f3_br_mask(cfi_idx)
+  def isBR(cfiPosition: UInt): Bool = {
+    f3_br_mask(cfiPosition)
   }
-  def isJAL(cfi_idx: UInt): Bool = {
-    f3_jal_mask(cfi_idx)
+  def isJAL(cfiPosition: UInt): Bool = {
+    f3_jal_mask(cfiPosition)
   }
   //目标地址判断+分支类型判断（由于目前BTB的·tag是full tag，不会出现分支混叠，故目前不需要考虑）+是否需要修复BTB + BTB 没存储的分支
   /* 
@@ -247,6 +247,7 @@ TODO:s2阶段如果阻塞（fb 满）并且icache hit，此时会出现问题，
 
   实际上jal指令可以全权交给前端处理，目前仅修复前五种情况
    */
+  val f3_cfiPosition    = Wire(UInt(log2Ceil(fetchWidth).W))
   val f3_cfi_idx        = Wire(UInt(log2Ceil(fetchWidth).W))
   val f3_cfi_target     = Wire(UInt(vaddrBitsExtended.W))
   val f3_cfi_valid      = Wire(Bool())
@@ -330,6 +331,7 @@ TODO:s2阶段如果阻塞（fb 满）并且icache hit，此时会出现问题，
   // dontTouch(f3_target_redirect_cond3)
   prechecker.io.req.valid         := f3_valid && (!backend_resteer)
   prechecker.io.req.clear         := false.B
+  prechecker.io.req.edge_inst     := f3_edge_inst
   prechecker.io.req.pc            := f3_req.ftq_entry.start_pc
   prechecker.io.req.inst_mask     := f3_decode_mask.asUInt
   prechecker.io.req.br_mask       := f3_br_mask.asUInt
@@ -348,31 +350,49 @@ TODO:s2阶段如果阻塞（fb 满）并且icache hit，此时会出现问题，
   early_resteer := prechecker.io.resp.redirect
   f3_final_mask:= prechecker.io.resp.inst_mask
   f3_cfi_target := prechecker.io.resp.target
-  f3_cfi_idx := prechecker.io.resp.cfi_idx.bits
-  f3_cfi_valid := prechecker.io.resp.cfi_idx.valid
+  f3_cfiPosition := prechecker.io.resp.cfiPosition.bits
+  // cfiPosition is the terminal halfword. An edge RVI terminates at slot 0;
+  // otherwise, RVI occupies the preceding slot and RVC occupies cfiPosition.
+  f3_cfi_idx := Mux(
+    f3_edge_inst && f3_cfiPosition === 0.U,
+    0.U,
+    Mux(f3_decode_mask(f3_cfiPosition), f3_cfiPosition, f3_cfiPosition - 1.U))
+  f3_cfi_valid := prechecker.io.resp.cfiPosition.valid
   f3_redirect_type := prechecker.io.resp.redirect_type
 
 
   backend_resteer                                         := io.fromFtq.redirect.valid
-  // early_resteer                                           := f3_valid&&(f3_jal_redirect || f3_ret_redirect || f3_target_redirect||f3_notCfi_taken_redirect||f3_isNot_valid_redirect)
-  // f3_final_mask                                           := Mux(io.toFtq.predecode_infos.bits.br_infos.cfi_idx.valid,f3_decode_mask.asUInt & (MaskLower(UIntToOH(f3_redirect_idx))) ,f3_decode_mask.asUInt)
-  io.toFtq.redirect_from_fetch                            := f3_valid&&(early_resteer)
+
   io.toFtq.redirect_target                                := f3_cfi_target
   io.toFtq.redirect_mask                                  := f3_final_mask 
   io.toFtq.redirect_ftq_idx                               := f3_req.ftq_idx
-  io.toFtq.redirect_cfi_idx                               := f3_cfi_idx
+  io.toFtq.redirect_cfi_idx                               := f3_cfiPosition
 
   io.toFtq.redirect_btb                                   := f3_valid&&f3_btb_repair
   io.toFtq.predecode_infos := DontCare
   io.toFtq.predecode_infos.valid                          := f3_valid && !f3_flush
-  io.toFtq.predecode_infos.bits.br_infos.cfi_idx.valid    := f3_valid && f3_cfi_valid
-  io.toFtq.predecode_infos.bits.br_infos.cfi_idx.bits     := f3_cfi_idx
+  io.toFtq.predecode_infos.bits.br_infos.cfiPosition.valid    := f3_valid && f3_cfi_valid
+  io.toFtq.predecode_infos.bits.br_infos.cfiPosition.bits     := f3_cfiPosition
   io.toFtq.predecode_infos.bits.br_infos.cfi_taken        := f3_redirect_type === jal_fault ||  f3_redirect_type === target_fault
   io.toFtq.predecode_infos.bits.br_infos.cfi_mispredicted :=  false.B
-  io.toFtq.predecode_infos.bits.br_infos.cfi_type         := f3_cfi_types(f3_cfi_idx)  
-  io.toFtq.predecode_infos.bits.br_infos.cfi_is_call      := f3_call_mask(f3_cfi_idx)       
-  io.toFtq.predecode_infos.bits.br_infos.cfi_is_ret       := f3_ret_mask (f3_cfi_idx)        
-  io.toFtq.predecode_infos.bits.br_infos.cfi_npc_plus4    := f3_npc_plus4_mask(f3_cfi_idx)   
+  //TODO: check it
+  io.toFtq.predecode_infos.bits.br_infos.attribute.branchType := Mux(
+    f3_cfi_types(f3_cfi_idx) === CFI_BR,
+    BranchAttribute.BranchType.Conditional,
+    Mux(f3_cfi_types(f3_cfi_idx) === CFI_JAL,
+      BranchAttribute.BranchType.Direct,
+      Mux(f3_cfi_types(f3_cfi_idx) === CFI_JALR,
+        BranchAttribute.BranchType.Indirect,
+        BranchAttribute.BranchType.None)))
+  io.toFtq.predecode_infos.bits.br_infos.attribute.rasAction := Mux(
+    f3_call_mask(f3_cfi_idx) && f3_ret_mask(f3_cfi_idx),
+    BranchAttribute.RasAction.PopAndPush,
+    Mux(f3_call_mask(f3_cfi_idx),
+      BranchAttribute.RasAction.Push,
+      Mux(f3_ret_mask(f3_cfi_idx),
+        BranchAttribute.RasAction.Pop,
+        BranchAttribute.RasAction.None)))
+
   io.toFtq.predecode_infos.bits.br_infos.br_mask          := f3_br_mask.asUInt & f3_final_mask.asUInt   
   io.toFtq.predecode_infos.bits.ftq_idx                   := f3_req.ftq_idx
   
@@ -387,13 +407,9 @@ TODO:s2阶段如果阻塞（fb 满）并且icache hit，此时会出现问题，
   f3_fetch_bundle.sfb_dests       := DontCare // now we dont care about SFB                                  
   f3_fetch_bundle.shadowable_mask := DontCare // now we dont care about SFB                                                     
   f3_fetch_bundle.shadowed_mask   := DontCare // now we dont care about SFB     
-  f3_fetch_bundle.cfi_idx.valid   := f3_valid && f3_cfi_valid
-  f3_fetch_bundle.cfi_idx.bits    := f3_cfi_idx                       
-  f3_fetch_bundle.cfi_type        := f3_cfi_types(f3_cfi_idx)                         
-  f3_fetch_bundle.cfi_is_call     := f3_call_mask(f3_cfi_idx)     
-  f3_fetch_bundle.cfi_is_ret      := f3_ret_mask (f3_cfi_idx)                                                  
-  f3_fetch_bundle.cfi_npc_plus4   := f3_npc_plus4_mask(f3_cfi_idx)                          
-  // f3_fetch_bundle.ras_top         := //Now we dont need it                            
+  f3_fetch_bundle.cfiPosition.valid   := f3_valid && f3_cfi_valid
+  f3_fetch_bundle.cfiPosition.bits    := f3_cfiPosition
+  f3_fetch_bundle.attribute       := io.toFtq.predecode_infos.bits.br_infos.attribute
   f3_fetch_bundle.ftq_idx         := f3_req.ftq_idx                         
   f3_fetch_bundle.mask            := f3_final_mask.asUInt                    
   f3_fetch_bundle.br_mask         := f3_br_mask.asUInt                           

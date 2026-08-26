@@ -33,6 +33,7 @@ class PreCheckerReq(implicit p: Parameters) extends BoomBundle
   val pc    = UInt(vaddrBitsExtended.W) // address of the first instruction in
   val valid     = Bool()
   val clear     = Bool()
+  val edge_inst = Bool()
   val inst_mask = UInt(fetchWidth.W)
   val target    = Vec(fetchWidth,UInt(vaddrBitsExtended.W))
   val pred_taken = Bool()
@@ -52,7 +53,7 @@ class PreCheckerResp(implicit p: Parameters) extends BoomBundle
   val target        = UInt(vaddrBitsExtended.W)
   val inst_mask     = UInt(fetchWidth.W)
   val redirect_type = UInt(3.W)
-  val cfi_idx       = Valid(UInt(log2Ceil(fetchWidth).W))
+  val cfiPosition       = Valid(UInt(log2Ceil(fetchWidth).W))
   // val jal_redirect
 }
 class PreDecodeResp(implicit p: Parameters) extends BoomBundle
@@ -227,6 +228,7 @@ class PreChecker(implicit p: Parameters) extends BoomModule()(p)
   val jalr_mask             = io.req.jalr_mask
   val ret_mask              = io.req.ret_mask
   val br_mask               = io.req.br_mask
+  val rvc_mask              = io.req.rvc_mask
   
   val decode_mask = io.req.inst_mask
 
@@ -286,8 +288,12 @@ class PreChecker(implicit p: Parameters) extends BoomModule()(p)
   io.resp.redirect      := io.req.valid&&(jal_redirect || target_redirect || ret_redirect || notCfi_taken_redirect || isNot_valid_redirect)
   io.resp.target        := redirectTarget 
 
-  io.resp.cfi_idx.valid := io.req.valid&&cfi_valid
-  io.resp.cfi_idx.bits  := cfi_idx
+  io.resp.cfiPosition.valid := io.req.valid&&cfi_valid
+  // An edge RVI starts in the previous block, so its terminal halfword is slot 0.
+  io.resp.cfiPosition.bits  := Mux(
+    io.req.edge_inst && cfi_idx === 0.U,
+    0.U,
+    Mux(rvc_mask(cfi_idx), cfi_idx, cfi_idx + 1.U))
   io.resp.inst_mask     := final_mask
   io.resp.redirect_type := MuxCase(0.U,Seq(
                               jal_redirect            -> jal_fault,

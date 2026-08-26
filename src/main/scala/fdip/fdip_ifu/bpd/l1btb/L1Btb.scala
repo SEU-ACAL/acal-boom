@@ -110,7 +110,7 @@ class L1BTB(implicit p: Parameters) extends L1BtbModule()(p)
 	val t0_pc    = io.train.bits.startPc
 	val t0_idx  = fetchIdx(t0_pc)
 	val t0_tag  = t0_idx>> log2Ceil(nSets)
-	val t0_meta = io.train.bits.meta
+	val t0_meta = io.train.bits.btbMeta
 	val t0_cfi = io.train.bits.cfi
 
 	val t1_tag = RegNext(t0_tag)

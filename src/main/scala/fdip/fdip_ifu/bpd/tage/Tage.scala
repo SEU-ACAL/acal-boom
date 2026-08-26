@@ -190,7 +190,7 @@ Train Stage
 
  */
   val t0_valid = io.train.valid
-  val t0_tageMeta = io.train.bits.meta
+  val t0_tageMeta = io.train.bits.tageMeta
   val t0_btbMeta = io.train.bits.btbMeta
   val t0_br_mask = io.train.bits.brMask
   val t0_cfi = io.train.bits.cfi
