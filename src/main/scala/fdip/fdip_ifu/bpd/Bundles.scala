@@ -43,26 +43,7 @@ class ResolvedCfi(implicit p: Parameters) extends BoomBundle()(p)
   val mispredict = Bool()
 }
 
-class BtbTrain(implicit p: Parameters) extends BpdBundle()(p)
-  with HasBoomFrontendParameters
-{
-  val startPc = UInt(vaddrBitsExtended.W)
-  val cfi     = new ResolvedCfi
-  val meta    = Vec(l1btbParameters.nWays,
-    Valid(new boom.fdip.ifu.bpd.l1btb.BTBPredictMeta()))
-}
 
-class TageCommitTrain(implicit p: Parameters) extends BpdBundle()(p)
-  with HasBoomFrontendParameters
-{
-  val startPc = UInt(vaddrBitsExtended.W)
-  val ghist   = new GlobalHistory
-  val brMask  = UInt(predWidth.W)
-  val cfi     = new ResolvedCfi
-  val btbMeta = Vec(l1btbParameters.nWays,
-    Valid(new boom.fdip.ifu.bpd.l1btb.BTBPredictMeta()))
-  val meta    = new boom.fdip.ifu.bpd.tage.TagePredictMeta(tageParameters.tableInfo.size)
-}
 
 class FastTrain(implicit p: Parameters) extends BoomBundle()(p)
   with HasBoomFrontendParameters
@@ -76,6 +57,8 @@ class Train(implicit p: Parameters) extends BoomBundle()(p)
 {
   val startPc  = UInt(vaddrBitsExtended.W)
   val branch   = new BranchInfo
+  val ghist   = new GlobalHistory
+  val brMask  = UInt(predWidth.W)
   val btbMeta  = Vec(BoomL1BTBParams().nWays,
     new boom.fdip.ifu.bpd.l1btb.BTBPredictMeta())
   val tageMeta = new boom.fdip.ifu.bpd.tage.TagePredictMeta(BoomTageParams().tableInfo.size)

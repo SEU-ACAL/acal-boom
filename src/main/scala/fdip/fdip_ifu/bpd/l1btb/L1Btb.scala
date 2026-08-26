@@ -35,7 +35,7 @@ class L1BTB(implicit p: Parameters) extends L1BtbModule()(p)
 
 	val s1_position = Output(Vec(params.nWays, UInt(log2Ceil(fetchBytes).W)))
 
-    val train = Input(Valid(new BtbTrain))
+    val train = Input(Valid(new Train))
   })
   override val nSets         = params.nSets
   override val nWays         = params.nWays

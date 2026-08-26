@@ -61,5 +61,5 @@ class TagePredictorIO(implicit p: Parameters) extends TageBundle()(p) {
   val tage_pred = Output(new TagePrediction())
   val fromBtb   = Input(new TageFromBtbInfo())
   val meta      = Output(new TagePredictMeta(tageParameters.tableInfo.size))
-  val train     = Input(Valid(new TageCommitTrain))
+  val train     = Input(Valid(new Train))
 }

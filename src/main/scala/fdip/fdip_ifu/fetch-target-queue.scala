@@ -51,30 +51,15 @@ class FTQBundle(implicit p: Parameters) extends BoomBundle
   // // TODO compress out high-order bits
   // val fetch_pc  = UInt(vaddrBitsExtended.W)
   // IDX of instruction that was predicted taken, if any
-  val cfi_idx   = Valid(UInt(log2Ceil(predWidth).W))
+  val cfiPosition = Valid(UInt(log2Ceil(predWidth).W))
   // Was the CFI in this bundle found to be taken? or not
   val cfi_taken = Bool()
   // Was this CFI mispredicted by the branch prediction pipeline?
   val cfi_mispredicted = Bool()
   // What type of CFI was taken out of this bundle
-  val cfi_type = UInt(CFI_SZ.W)
+  val attribute = new BranchAttribute
   // mask of branches which were visible in this fetch bundle
   val br_mask   = UInt(predWidth.W)
-  // This CFI is likely a CALL
-  val cfi_is_call   = Bool()
-  // This CFI is likely a RET
-  val cfi_is_ret    = Bool()
-  // Is the NPC after the CFI +4 or +2
-  val cfi_npc_plus4 = Bool()
-  // What was the top of the RAS that this bundle saw?
-  val ras_top = UInt(vaddrBitsExtended.W)
-  val ras_idx = UInt(log2Ceil(nRasEntries).W)
-
-  // // Which bank did this start from?
-  // val start_bank = UInt(1.W)
-
-  // // Metadata for the branch predictor
-  // val bpd_meta = Vec(nBanks, UInt(bpdMaxMetaLength.W))
 }
 
 class FTQPCBundle(implicit p: Parameters) extends BoomBundle
@@ -169,14 +154,15 @@ class FTQToBPUIO(implicit p: Parameters) extends BoomBundle
   val redirect_pc     = Output(UInt(vaddrBitsExtended.W))
   val redirect_ftq_idx= Output(UInt((log2Ceil(ftqSz)+1).W)) 
   val redirect_ghist  = Output(new GlobalHistory)
+  val redirect_rasState = Output(new RasState)
+
   val redirect_btb_repair = Output(Bool())
-  val btbTrain = Output(Valid(new BtbTrain))
-  val tageCommitTrain = Output(Valid(new TageCommitTrain))
-  val bpdupdate = Output(Valid(new BranchPredictionUpdate))
+
+  val train = Output(Valid(new Train))
+  // val bpdupdate = Output(Valid(new BranchPredictionUpdate))
 
   val ras_update = Output(Bool())
-  val ras_update_idx = Output(UInt(log2Ceil(nRasEntries).W))
-  val ras_update_pc  = Output(UInt(vaddrBitsExtended.W))
+  val ras_updateState = Output(new RasState())
 }
 
 class FTQToPrefetchIO(implicit p: Parameters) extends BoomBundle
@@ -289,9 +275,11 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
 
 
   val pc_mem        = Reg(Vec(num_entries, new FTQPCBundle))//后端读pc
+
   val meta          = Reg(Vec(num_entries, new BranchPredictionMeta))//commit update
-  val redirect_mem  = Reg(Vec(num_entries, new SpecInfoBundle()))//some info needed to redirect:IFU-redirect+backend-redirect+commit
+
   
+  val redirect_mem  = Reg(Vec(num_entries, new SpecInfoBundle()))//some info needed to redirect:IFU-redirect+backend-redirect+commit
   val pd_mem        = Reg(Vec(num_entries, new FTQBundle))//some info needed to redirect:IFU-redirect+backend-redirect+commit
   
   val cfi_offset    = Reg(Vec(num_entries, Valid(UInt((log2Ceil(predWidth)).W))))
@@ -406,16 +394,11 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   val new_entry = Wire(new FTQBundle)
   val prev_ghist = RegInit((0.U).asTypeOf(new GlobalHistory))
   val prev_entry = RegInit((0.U).asTypeOf(new FTQBundle))
-  new_entry.cfi_idx           := io.fromIfu.predecode_infos.bits.br_infos.cfi_idx
+  new_entry.cfiPosition           := io.fromIfu.predecode_infos.bits.br_infos.cfiPosition
   new_entry.cfi_taken         := io.fromIfu.predecode_infos.bits.br_infos.cfi_taken
   new_entry.cfi_mispredicted  := false.B
-  new_entry.cfi_type          := io.fromIfu.predecode_infos.bits.br_infos.cfi_type
-  new_entry.cfi_is_call       := io.fromIfu.predecode_infos.bits.br_infos.cfi_is_call
-  new_entry.cfi_is_ret        := io.fromIfu.predecode_infos.bits.br_infos.cfi_is_ret
-  new_entry.cfi_npc_plus4     := io.fromIfu.predecode_infos.bits.br_infos.cfi_npc_plus4
+  new_entry.attribute          := io.fromIfu.predecode_infos.bits.br_infos.attribute
   new_entry.br_mask           := io.fromIfu.predecode_infos.bits.br_infos.br_mask 
-  new_entry.ras_top           := DontCare
-  new_entry.ras_idx           := DontCare
   //pfc入队只要没有full就行，这个full条件其实是pc_mem的，写入的地址来自ftq传往ifu的指针
   // io.fromIfu.predecode_infos.ready := (!full)
   when(io.fromIfu.predecode_infos.valid){
@@ -479,20 +462,18 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
     pf_ptr              := CirWrapInc(io.fromBackend.redirect_ftq_idx)
     
     when(io.fromBackend.brupdate.b2.mispredict){
+      //TODO: update it 如果是RVC 那么pc lob 就是position 如果是RVI，那么pc lob就是position+1
       val new_cfi_idx = (io.fromBackend.brupdate.b2.uop.pc_lob)/(coreInstBytes.U)//截断的指令属于下一个block
-      bpd_redirect_entry.cfi_idx.valid    := true.B
-      bpd_redirect_entry.cfi_idx.bits     := new_cfi_idx
+      bpd_redirect_entry.cfiPosition.valid    := true.B
+      bpd_redirect_entry.cfiPosition.bits     := new_cfi_idx
       bpd_redirect_entry.cfi_mispredicted := true.B
       bpd_redirect_entry.cfi_taken        := io.fromBackend.brupdate.b2.taken
-      bpd_redirect_entry.cfi_type         := io.fromBackend.brupdate.b2.cfi_type
-      // bpd_redirect_entry.
-      bpd_redirect_entry.cfi_is_call      := io.fromBackend.brupdate.b2.is_call 
-      bpd_redirect_entry.cfi_is_ret       := io.fromBackend.brupdate.b2.is_ret  
+      bpd_redirect_entry.attribute         := io.fromBackend.brupdate.b2.cfi_type
     }.otherwise{
       /* 
       此时由于前端PFC，可能存储的为jal指令，但实际上，这个指令被前面的redirect打断，此时不能更新这个信息
        */
-      bpd_redirect_entry.cfi_idx.valid    := false.B
+      bpd_redirect_entry.cfiPosition.valid    := false.B
       bpd_redirect_entry.cfi_mispredicted := false.B
     }
     // ras_update     := true.B
@@ -530,11 +511,11 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   //we DONT USE loop predictor
   io.toBPU.ftq_idx := bpu_ptr
   io.toBPU.bpdupdate:=DontCare
-  val cfi_idx = bpd_update_entry.cfi_idx.bits
+
 
   val update_cfi = Wire(new ResolvedCfi)
-  update_cfi.valid      := bpd_update_entry.cfi_idx.valid
-  update_cfi.position   := bpd_update_entry.cfi_idx.bits
+  update_cfi.valid      := bpd_update_entry.cfiPosition.valid
+  update_cfi.position   := bpd_update_entry.cfiPosition.bits
   update_cfi.taken      := bpd_update_entry.cfi_taken
   update_cfi.target     := bpd_update_target
   update_cfi.mispredict := bpd_update_entry.cfi_mispredicted
@@ -557,45 +538,15 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
     MaskLower(UIntToOH(update_cfi.position)) & bpd_update_entry.br_mask,
     bpd_update_entry.br_mask)
 
-  io.toBPU.btbTrain.valid       := bpd_update_commit && update_cfi.valid
-  io.toBPU.btbTrain.bits.startPc := bpd_update_pc
-  io.toBPU.btbTrain.bits.cfi     := update_cfi
-  io.toBPU.btbTrain.bits.meta    := bpd_update_meta.btb
+  io.toBPU.train.valid := bpd_update_commit && (update_cfi.valid || update_br_mask =/= 0.U)
+  io.toBPU.train.bits.startPc := bpd_update_pc
+  io.toBPU.train.bits.ghist   := bpd_update_ghist
+  io.toBPU.train.bits.brMask  := update_br_mask
+  io.toBPU.train.bits.cfi     := update_cfi
+  io.toBPU.train.bits.btbMeta := bpd_update_meta.btb
+  io.toBPU.train.bits.meta    := bpd_update_meta.tage
+  // //TODO: add repair update
 
-  io.toBPU.tageCommitTrain.valid       := bpd_update_commit &&
-    (update_cfi.valid || update_br_mask =/= 0.U)
-  io.toBPU.tageCommitTrain.bits.startPc := bpd_update_pc
-  io.toBPU.tageCommitTrain.bits.ghist   := bpd_update_ghist
-  io.toBPU.tageCommitTrain.bits.brMask  := update_br_mask
-  io.toBPU.tageCommitTrain.bits.cfi     := update_cfi
-  io.toBPU.tageCommitTrain.bits.btbMeta := bpd_update_meta.btb
-  io.toBPU.tageCommitTrain.bits.meta    := bpd_update_meta.tage
-
-  io.toBPU.bpdupdate.valid                     := bpd_update_commit && (bpd_update_entry.cfi_idx.valid || bpd_update_entry.br_mask =/= 0.U)
-  //TODO: add repair update
-  io.toBPU.bpdupdate.bits.is_mispredict_update := !bpd_update_commit
-
-  io.toBPU.bpdupdate.bits.is_repair_update     := false.B
-  io.toBPU.bpdupdate.bits.pc                   := bpd_update_pc
-  io.toBPU.bpdupdate.bits.btb_mispredicts      := 0.U
-  io.toBPU.bpdupdate.bits.br_mask              := update_br_mask
-  io.toBPU.bpdupdate.bits.cfi_idx              := bpd_update_entry.cfi_idx
-  io.toBPU.bpdupdate.bits.cfi_mispredicted     := bpd_update_entry.cfi_mispredicted
-  io.toBPU.bpdupdate.bits.cfi_taken            := bpd_update_entry.cfi_taken
-  io.toBPU.bpdupdate.bits.target               := bpd_update_target
-  io.toBPU.bpdupdate.bits.cfi_is_br            := bpd_update_entry.br_mask(cfi_idx)
-  io.toBPU.bpdupdate.bits.cfi_is_jal           := bpd_update_entry.cfi_type === CFI_JAL 
-  io.toBPU.bpdupdate.bits.cfi_is_jalr          := bpd_update_entry.cfi_type === CFI_JALR
-  io.toBPU.bpdupdate.bits.cfi_is_call          := bpd_update_entry.cfi_is_call
-  io.toBPU.bpdupdate.bits.cfi_is_ret           := bpd_update_entry.cfi_is_ret
-  io.toBPU.bpdupdate.bits.ghist                := bpd_update_ghist
-  io.toBPU.bpdupdate.bits.lhist                := DontCare
-  io.toBPU.bpdupdate.bits.meta                 := bpd_update_meta
-  // when (bpd_update_commit) {
-
-
-  //   // first_empty := false.B
-  // }
   //redirect (
   val ifu_redirect_entry  = RegNext(new_entry)
   ifu_redirect_ghist := bpd_update_ghist
@@ -612,8 +563,8 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   io.toBPU.redirect_btb_repair                   := RegNext(io.fromIfu.redirect_btb)//只有ifu的重定向才会early修复btb,其他的就是commit更新
   //RAS目前只修复由于call指令导致的错误（一般是未识别导致的）
   io.toBPU.ras_update                            := bpd_update_mispredict && (ras_update_info.cfi_is_call)
-  io.toBPU.ras_update_idx                        := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).rasState.idx)
-  io.toBPU.ras_update_pc                         := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).rasState.top)
+  io.toBPU.ras_updateState.idx                        := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).rasState.idx)
+  io.toBPU.ras_updateState.top                         := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).rasState.top)
 /* -------------------------------------------------------------------------- */
 /*                                 To Prefetch                                */
 /* -------------------------------------------------------------------------- */
