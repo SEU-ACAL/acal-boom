@@ -82,6 +82,7 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
   val t1_hit_entry = RegNext(t0_hit_entry)
   val t1_valid = RegNext(t0_valid)
   val t1_tag  = RegNext(t0_tag)
+  val t1_pc = RegNext(t0_pc)
   val t1_attribute = RegNext(t0_attribute)
   val t1_taken = RegNext(io.train.bits.branch.taken)
   val t1_position = RegNext(io.train.bits.branch.cfiPosition)
@@ -106,7 +107,7 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
   t1_update_entry := t1_existing_entry
 
   when(t1_valid && !t1_hit){
-    t1_update_entry.offset := (t1_target.asSInt - t0_pc.asSInt).asSInt
+    t1_update_entry.offset := (t1_target.asSInt - t1_pc.asSInt).asSInt
     t1_update_entry.attribute := t1_attribute
     t1_update_entry.position := t1_position
     t1_update_entry.tag := t1_tag(tagSz-1,0)
@@ -116,7 +117,7 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
   when(t1_valid && t1_hit){
     when(!t1_taken){
       when(btb_entries(t1_hit_entry).ctr === 0.U || t1_posMismatch || t1_attrMismatch){
-        t1_update_entry.offset := (t1_target.asSInt - t0_pc.asSInt).asSInt
+        t1_update_entry.offset := (t1_target.asSInt - t1_pc.asSInt).asSInt
         t1_update_entry.attribute := t1_attribute
         t1_update_entry.position := t1_position
         t1_update_entry.tag := t1_tag(tagSz-1,0)
@@ -130,14 +131,14 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
   }
   when(t1_valid){
     when(!t1_hit){
-      t1_update_entry.offset := (t1_target.asSInt - t0_pc.asSInt).asSInt
+      t1_update_entry.offset := (t1_target.asSInt - t1_pc.asSInt).asSInt
       t1_update_entry.attribute := t1_attribute
       t1_update_entry.position := t1_position
       t1_update_entry.tag := t1_tag(tagSz-1,0)
       t1_update_entry.ctr := 2.U
     }.elsewhen(!t1_taken || t1_posMismatch || t1_attrMismatch){
       when(btb_entries(t1_hit_entry).ctr === 0.U){
-        t1_update_entry.offset := (t1_target.asSInt - t0_pc.asSInt).asSInt
+        t1_update_entry.offset := (t1_target.asSInt - t1_pc.asSInt).asSInt
         t1_update_entry.attribute := t1_attribute
         t1_update_entry.position := t1_position
         t1_update_entry.tag := t1_tag(tagSz-1,0)

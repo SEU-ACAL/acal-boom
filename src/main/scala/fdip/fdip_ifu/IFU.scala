@@ -362,7 +362,7 @@ TODO:s2阶段如果阻塞（fb 满）并且icache hit，此时会出现问题，
 
 
   backend_resteer                                         := io.fromFtq.redirect.valid
-
+  io.toFtq.redirect_from_fetch                            := f3_valid && early_resteer
   io.toFtq.redirect_target                                := f3_cfi_target
   io.toFtq.redirect_mask                                  := f3_final_mask 
   io.toFtq.redirect_ftq_idx                               := f3_req.ftq_idx
@@ -409,7 +409,7 @@ TODO:s2阶段如果阻塞（fb 满）并且icache hit，此时会出现问题，
   f3_fetch_bundle.shadowed_mask   := DontCare // now we dont care about SFB     
   f3_fetch_bundle.cfiPosition.valid   := f3_valid && f3_cfi_valid
   f3_fetch_bundle.cfiPosition.bits    := f3_cfiPosition
-  f3_fetch_bundle.attribute       := io.toFtq.predecode_infos.bits.br_infos.attribute
+  f3_fetch_bundle.attribute        := io.toFtq.predecode_infos.bits.br_infos.attribute
   f3_fetch_bundle.ftq_idx         := f3_req.ftq_idx                         
   f3_fetch_bundle.mask            := f3_final_mask.asUInt                    
   f3_fetch_bundle.br_mask         := f3_br_mask.asUInt                           

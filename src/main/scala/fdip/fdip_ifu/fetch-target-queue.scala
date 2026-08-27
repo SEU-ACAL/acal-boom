@@ -464,8 +464,16 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
     pf_ptr              := CirWrapInc(io.fromBackend.redirect_ftq_idx)
     
     when(io.fromBackend.brupdate.b2.mispredict){
-      //TODO: update it 如果是RVC 那么pc lob 就是position 如果是RVI，那么pc lob就是position+1
-      val new_cfi_idx = (io.fromBackend.brupdate.b2.uop.pc_lob)/(coreInstBytes.U)//截断的指令属于下一个block
+      // CFI position is the terminal halfword of the instruction.  pc_lob is
+      // the instruction start offset, so an RVI branch occupies the next
+      // halfword position while an RVC branch uses its start position.
+      // Keep the same encoding used by PreChecker and FetchBuffer; otherwise
+      // a repaired RVI entry gets a false uop.taken value and its not-taken
+      // resolution cannot generate a backend redirect.
+      val new_cfi_idx = Mux(
+        io.fromBackend.brupdate.b2.uop.is_rvc || io.fromBackend.brupdate.b2.uop.edge_inst,
+        io.fromBackend.brupdate.b2.uop.pc_lob(log2Ceil(fetchWidth), 1),
+        io.fromBackend.brupdate.b2.uop.pc_lob(log2Ceil(fetchWidth), 1) + 1.U)
       bpd_redirect_entry.cfiPosition.valid    := true.B
       bpd_redirect_entry.cfiPosition.bits     := new_cfi_idx
       bpd_redirect_entry.cfi_mispredicted := true.B
@@ -564,12 +572,20 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   //
   val backend_hitBtbNum =  backend_redirect_meta.btb.map{meta=>
     meta.valid && meta.bits.attribute.isConditional && 
-    (meta.bits.position <= backend_redirectPosition && io.fromBackend.redirect_val && 
-    (io.fromBackend.brupdate.b2.mispredict) && io.fromBackend.brupdate.b2.uop.is_br)    
+    io.fromBackend.redirect_val && (io.fromBackend.brupdate.b2.mispredict) &&
+    (meta.bits.position <= backend_redirectPosition && io.fromBackend.brupdate.b2.uop.is_br ||
+    meta.bits.position < backend_redirectPosition && !io.fromBackend.brupdate.b2.uop.is_br)
   }
-  val backend_finalHitNum = Mux(backend_redirectHitBtb.reduce(_||_),PopCount(backend_hitBtbNum),PopCount(backend_hitBtbNum) + 1.U)
+
+  val backendHitCountWidth = log2Ceil(backend_redirect_meta.btb.length + 2)
+  val backend_finalHitNum = Wire(UInt(backendHitCountWidth.W))
+  backend_finalHitNum := Mux(
+    backend_redirectHitBtb.reduce(_||_),
+    PopCount(backend_hitBtbNum),
+    PopCount(backend_hitBtbNum) + 1.U)
   val redirect_needUpdateGhist_r = RegNext(redirect_needUpdateGhist)
-  val backend_finalHitNum_r = RegNext(backend_finalHitNum)
+  val backend_finalHitNum_r = Reg(UInt(backendHitCountWidth.W))
+  backend_finalHitNum_r := backend_finalHitNum
   val backend_redirect_taken_r = RegNext(io.fromBackend.brupdate.b2.taken)
   backend_redirect_ghist := Mux(redirect_needUpdateGhist_r, bpd_update_ghist.update(backend_finalHitNum_r, backend_redirect_taken_r, redirect_needUpdateGhist_r), bpd_update_ghist)
 

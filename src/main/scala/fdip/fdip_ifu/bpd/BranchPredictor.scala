@@ -53,7 +53,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   val s0_ghist          = WireInit((0.U).asTypeOf(new GlobalHistory))
   val s0_rasState       = WireInit((0.U).asTypeOf(new RasState))
   val bpdF0Valid = s0_valid
-  val bpdF0Pc    = fetchAlign(s0_pc)
+  val bpdF0Pc    = s0_pc
   val bpdF1Ghist = RegNext(s0_ghist.histories)
 
   val s0_fire, s1_fire, s2_fire, s3_fire = WireInit(false.B)
@@ -84,7 +84,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   val s1_ghist          = RegEnable(s0_ghist,0.U.asTypeOf(new GlobalHistory),s0_fire)
   val s1_rasState       = RegEnable(s0_rasState,s0_fire)
   //目前s1级只有一个分支预测结果，后续需要扩展为多个分支预测结果
-  val s1_predGhist      = s1_ghist.update(1.U, s1_prediction.bits.taken, s1_fire && s1_prediction.valid)
+  val s1_predGhist      = s1_ghist.update(1.U, s1_prediction.bits.taken, s1_fire && s1_prediction.valid && s1_prediction.bits.attribute.isConditional)
 
   btb.io.f0_valid := bpdF0Valid
   btb.io.f0_pc    := bpdF0Pc
@@ -135,16 +135,22 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   val s2_taken = s2_takenMask.reduce(_||_)
   val s2_firstTakenBranchOH = s2_compareMatrix.getLeastElementOH(s2_takenMask)
   val s2_firstTakenBranch = Mux1H(s2_firstTakenBranchOH, s2_btbResp)
-  
+  /*
+  1. taken的分支是条件分支
+  2. taken的分支是非条件分支
+  3. 没有taken分支
+
+  */
   val s2_btbHitNum = PopCount(s2_btbResp.map{btb=>
     btb.valid && btb.bits.attribute.isConditional &&
-    (btb.bits.cfiPosition <=s2_firstTakenBranch.bits.cfiPosition && 
-    s2_firstTakenBranch.valid && s2_firstTakenBranch.bits.attribute.isConditional ||
+    (s2_firstTakenBranch.valid&& ((btb.bits.cfiPosition <=s2_firstTakenBranch.bits.cfiPosition) &&
+     s2_firstTakenBranch.bits.attribute.isConditional || (btb.bits.cfiPosition < s2_firstTakenBranch.bits.cfiPosition) &&
+     !s2_firstTakenBranch.bits.attribute.isConditional) ||
     !s2_taken)
   })
 
   val s2_useRas = s2_firstTakenBranch.valid && s2_firstTakenBranch.bits.attribute.isReturn && useRAS.B
-
+  val s2_isCallOrRet = s2_firstTakenBranch.valid && (s2_firstTakenBranch.bits.attribute.isCall || s2_firstTakenBranch.bits.attribute.isReturn)
   val s2_target = MuxCase(nextFetch(s2_pc),
     Seq(
       s2_useRas -> ras.io.read_addr,
@@ -166,7 +172,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   s2_prediction.cfiPosition := s2_firstTakenBranch.bits.cfiPosition
   s2_prediction.target      := s2_target
   s2_prediction.attribute   := s2_firstTakenBranch.bits.attribute
-  val s2_predGhist = s2_ghist.update(s2_btbHitNum, s2_firstTakenBranch.bits.taken, s2_fire && s2_firstTakenBranch.valid)
+  val s2_predGhist = s2_ghist.update(s2_btbHitNum, s2_taken, s2_fire && s2_firstTakenBranch.valid)
   val bpdMeta = Wire(new BranchPredictionMeta)
   bpdMeta.tage     := tage.io.meta
   bpdMeta.btb      := btb.io.meta
@@ -256,7 +262,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   Seq(
     (RegNext(reset.asBool) && !reset.asBool) -> (0.U).asTypeOf(new RasState),
     io.fromFtq.ras_update                  -> io.fromFtq.ras_updateState,
-    (s2_redirect||f2_correct_f1_ghist)       -> s2_predRasState
+    (s2_isCallOrRet)       -> s2_predRasState
   )) 
   //redirect and clear
   //其实这里还需要去做位置判断
@@ -271,9 +277,9 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   // io.toFtq.resp.bits.f3_pred_target := s3_predTarget
 
   //TODO:fix RAS
-  ras.io.read_idx    := s2_rasState.idx 
+  ras.io.read_idx    := s1_rasState.idx
   ras.io.write_valid := s2_valid && useRAS.B && s2_taken && s2_firstTakenBranch.bits.attribute.isCall
-  ras.io.write_addr  := s2_alignPc + s2_prediction.cfiPosition<<1.U + 2.U
+  ras.io.write_addr  := s2_alignPc + (s2_prediction.cfiPosition<<1.U) + 2.U
   ras.io.write_idx   := WrapInc(s2_rasState.idx, nRasEntries)
 
 

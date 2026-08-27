@@ -401,7 +401,7 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
 
     jal_br_target := (brj_uop_pc.asSInt + target_offset +
       (Fill(vaddrBitsExtended-1, uop.edge_inst) << 1).asSInt).asUInt
-
+    dontTouch(jal_br_target)
 
     
     def encodeVirtualAddress(a0: UInt, ea: UInt) = if (vaddrBitsExtended == vaddrBits) {
