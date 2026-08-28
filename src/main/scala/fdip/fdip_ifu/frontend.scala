@@ -178,6 +178,10 @@ class FrontendResp(implicit p: Parameters) extends BoomBundle()(p) {
  */
 trait HasBoomFrontendParameters extends HasL1ICacheParameters
 {
+  // Number of low address bits occupied by the minimum instruction alignment.
+  // Keep this as a shared parameter so BTB target slicing uses the same
+  // alignment as the rest of the frontend.
+  val instOffsetBits = log2Ceil(coreInstBytes)
 
 
   // How many banks does the ICache use?

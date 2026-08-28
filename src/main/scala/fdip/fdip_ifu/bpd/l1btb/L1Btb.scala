@@ -21,34 +21,34 @@ s2: response stage
  */
 
 class L1BTB(implicit p: Parameters) extends L1BtbModule()(p)
-{
-  val params = l1BtbParams
+with L1BTBHelper{
+	val params = l1BtbParams
 
-  val io = IO(new Bundle {
-    val f0_valid = Input(Bool())
-    val f0_pc    = Input(UInt(vaddrBitsExtended.W))
+	val io = IO(new Bundle {
+		val f0_valid = Input(Bool())
+		val f0_pc    = Input(UInt(vaddrBitsExtended.W))
 
-    val resp    = Output(Vec(params.nWays, Valid(new Prediction)))
-    // Store the meta as a UInt, use width inference to figure out the shape
-    val meta = Output(Vec(params.nWays,
-      Valid(new boom.fdip.ifu.bpd.l1btb.BTBPredictMeta())))
+		val resp    = Output(Vec(params.nWays, Valid(new Prediction)))
+		// Store the meta as a UInt, use width inference to figure out the shape
+		val meta = Output(Vec(params.nWays,
+		Valid(new boom.fdip.ifu.bpd.l1btb.BTBPredictMeta())))
 
-	val s1_position = Output(Vec(params.nWays, UInt(log2Ceil(fetchBytes).W)))
+		val s1_position = Output(Vec(params.nWays, UInt(log2Ceil(fetchBytes).W)))
 
-    val train = Input(Valid(new Train))
-  })
-  override val nSets         = params.nSets
-  override val nWays         = params.nWays
-  val tagSz         = vaddrBitsExtended - log2Ceil(nSets) - log2Ceil(fetchBytes) - 1
-  val offsetSz      = params.offsetSz
+		val train = Input(Valid(new Train))
+	})
+	override val nSets         = params.nSets
+	override val nWays         = params.nWays
+	val tagSz         = vaddrBitsExtended - log2Ceil(nSets) - log2Ceil(fetchBytes) - 1
+	val offsetSz      = params.offsetSz
 
 
-  require(isPow2(nSets))
+	require(isPow2(nSets))
 
-  val doing_reset = RegInit(true.B)
-  val reset_idx   = RegInit(0.U(log2Ceil(nSets).W))
-  reset_idx := reset_idx + doing_reset
-  when (reset_idx === (nSets-1).U) { doing_reset := false.B }
+	val doing_reset = RegInit(true.B)
+	val reset_idx   = RegInit(0.U(log2Ceil(nSets).W))
+	reset_idx := reset_idx + doing_reset
+	when (reset_idx === (nSets-1).U) { doing_reset := false.B }
 
 
   val btb      = Seq.fill(nWays) {SyncReadMem(nSets, new BTBEntry(offsetSz, tagSz))}
@@ -65,12 +65,12 @@ class L1BTB(implicit p: Parameters) extends L1BtbModule()(p)
 
 
 
-  val s1_hits = VecInit((0 until nWays) map { w =>
-    s1_req_rbtb(w).tag === s1_req_tag(tagSz-1,0)
-  })
+	val s1_hits = VecInit((0 until nWays) map { w =>
+		s1_req_rbtb(w).tag === s1_req_tag(tagSz-1,0)
+	})
 	io.s1_position := s1_req_rbtb.map(_.position)
 	val s1_valid    = RegNext(s0_valid)
-  val s1_hit_way  = PriorityEncoder(s1_hits)
+	val s1_hit_way  = PriorityEncoder(s1_hits)
 
 
 	val s1_instOffset = s1_pc(log2Ceil(fetchBytes)-1,1)
@@ -89,7 +89,7 @@ class L1BTB(implicit p: Parameters) extends L1BtbModule()(p)
 		io.resp(w).bits.cfiPosition := entry.position
 		io.resp(w).bits.attribute := entry.attribute
 		io.resp(w).bits.taken := !entry.attribute.isNone && entry.ctr(1) === 1.U //direct's ctr(1) is 1
-  		io.resp(w).bits.target := (s2_pc.asSInt + entry.offset).asUInt 
+		io.resp(w).bits.target := getFullTarget(s2_pc, entry.target, Some(entry.targetCarry))
 
 		io.meta(w).valid := !doing_reset && s2_hits(w) && s2_valid 
 		io.meta(w).bits.position := entry.position
@@ -133,7 +133,8 @@ class L1BTB(implicit p: Parameters) extends L1BtbModule()(p)
 	val t1_entry = Wire(new BTBEntry(offsetSz, tagSz))
 		t1_entry.position := t1_cfi.position
 		t1_entry.attribute := t1_cfi.attribute
-		t1_entry.offset := (t1_cfi.target.asSInt - t1_pc.asSInt).asSInt
+		t1_entry.target := t1_cfi.target(offsetSz+instOffsetBits-1,instOffsetBits)
+		t1_entry.targetCarry := getTargetCarry(t1_pc, t1_cfi.target)
 		t1_entry.tag := t1_tag(tagSz-1,0)
 		t1_entry.ctr := Mux(t1_cfi.taken, 3.U, 0.U) //direct's ctr(1) is 1
 		// Allocate on a miss and rewrite an existing entry only after a correction.

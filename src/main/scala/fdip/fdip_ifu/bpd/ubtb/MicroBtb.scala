@@ -14,7 +14,7 @@ import boom.fdip.ifu.bpd._
 
 import scala.math.min
 
-class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
+class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p) with UBTBHelper
 {
   val io = IO(new FAMicroBTBPredictorIO)
 
@@ -37,13 +37,7 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
 
   require(isPow2(nEntries), s"nEntries must be a power of 2, got $nEntries")
 
-  class MicroBTBEntry extends Bundle {
-    val offset   = SInt(offsetSz.W)
-    val attribute = new BranchAttribute
-    val position = UInt(log2Ceil(fetchBytes).W)
-    val tag   = UInt(tagSz.W)
-    val ctr   = UInt(2.W)
-  }
+
 
 
   val btb_entries      = Reg(Vec(nEntries,new MicroBTBEntry))
@@ -60,7 +54,7 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
   io.resp.valid       := s1_hits && s1_valid
   io.resp.bits.attribute     := Mux(s1_hits, btb_entries(s1_hit_entry).attribute, 0.U.asTypeOf(new BranchAttribute))
   io.resp.bits.cfiPosition   := Mux(s1_hits, btb_entries(s1_hit_entry).position, 0.U)
-  io.resp.bits.target        := Mux(s1_hits, (s1_pc.asSInt + btb_entries(s1_hit_entry).offset).asUInt, 0.U)
+  io.resp.bits.target        := getFullTarget(s1_pc, btb_entries(s1_hit_entry).target)
   io.resp.bits.taken         := s1_hits
 
 
@@ -106,39 +100,17 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p)
 
   t1_update_entry := t1_existing_entry
 
-  when(t1_valid && !t1_hit){
-    t1_update_entry.offset := (t1_target.asSInt - t1_pc.asSInt).asSInt
-    t1_update_entry.attribute := t1_attribute
-    t1_update_entry.position := t1_position
-    t1_update_entry.tag := t1_tag(tagSz-1,0)
-    t1_update_entry.ctr := 2.U
-  }
 
-  when(t1_valid && t1_hit){
-    when(!t1_taken){
-      when(btb_entries(t1_hit_entry).ctr === 0.U || t1_posMismatch || t1_attrMismatch){
-        t1_update_entry.offset := (t1_target.asSInt - t1_pc.asSInt).asSInt
-        t1_update_entry.attribute := t1_attribute
-        t1_update_entry.position := t1_position
-        t1_update_entry.tag := t1_tag(tagSz-1,0)
-        t1_update_entry.ctr := 2.U
-      }.otherwise{
-        t1_update_entry.ctr := btb_entries(t1_hit_entry).ctr - 1.U
-      }
-    }.otherwise{
-        t1_update_entry.ctr := Mux(btb_entries(t1_hit_entry).ctr === 3.U, 3.U, btb_entries(t1_hit_entry).ctr + 1.U)
-    }
-  }
   when(t1_valid){
     when(!t1_hit){
-      t1_update_entry.offset := (t1_target.asSInt - t1_pc.asSInt).asSInt
+      t1_update_entry.target := t1_target(offsetSz+instOffsetBits-1,instOffsetBits)
       t1_update_entry.attribute := t1_attribute
       t1_update_entry.position := t1_position
       t1_update_entry.tag := t1_tag(tagSz-1,0)
       t1_update_entry.ctr := 2.U
     }.elsewhen(!t1_taken || t1_posMismatch || t1_attrMismatch){
       when(btb_entries(t1_hit_entry).ctr === 0.U){
-        t1_update_entry.offset := (t1_target.asSInt - t1_pc.asSInt).asSInt
+        t1_update_entry.target := t1_target(offsetSz+instOffsetBits-1,instOffsetBits)
         t1_update_entry.attribute := t1_attribute
         t1_update_entry.position := t1_position
         t1_update_entry.tag := t1_tag(tagSz-1,0)

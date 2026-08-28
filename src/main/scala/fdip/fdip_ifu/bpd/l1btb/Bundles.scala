@@ -12,7 +12,8 @@ class BTBEntry(val offsetSz: Int, val tagSz: Int)(implicit p: Parameters)
   extends L1BtbBundle()(p) {
   val attribute = new BranchAttribute
   val position  = UInt(log2Ceil(fetchBytes).W)
-  val offset    = SInt(offsetSz.W)
+  val target    = UInt(offsetSz.W)
+  val targetCarry = new TargetCarry
   val tag       = UInt(tagSz.W)
   val ctr       = UInt(2.W)
 }
