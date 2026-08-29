@@ -236,21 +236,45 @@ class PreChecker(implicit p: Parameters) extends BoomModule()(p)
   val target      = io.req.target
   val pred_target = io.req.pred_target
 
-  jal_redirect       := io.req.pred_taken&&(PriorityEncoder(jal_mask)<io.req.pred_cfi_idx) && 
-                          (PriorityEncoder(jal_mask)>=PriorityEncoder(decode_mask)) || 
-                          (!io.req.pred_taken)&&(jal_mask=/=0.U)
-  ret_redirect       := io.req.pred_taken&&(PriorityEncoder(ret_mask)<io.req.pred_cfi_idx) && 
-                          (PriorityEncoder(ret_mask)>=PriorityEncoder(decode_mask)) || 
-                          (!io.req.pred_taken)&&(ret_mask=/=0.U)
+  // CFI positions name terminal halfwords, but decode metadata is indexed by
+  // instruction starts. Convert the predicted position before every lookup.
+  val pred_cfi_is_edge = io.req.edge_inst && io.req.pred_cfi_idx === 0.U
+  val pred_cfi_is_rvc = decode_mask(io.req.pred_cfi_idx) &&
+    rvc_mask(io.req.pred_cfi_idx)
+  val pred_prev_inst_idx = Mux(
+    io.req.pred_cfi_idx === 0.U,
+    0.U,
+    io.req.pred_cfi_idx - 1.U)
+  val pred_cfi_is_rvi = io.req.pred_cfi_idx =/= 0.U &&
+    decode_mask(pred_prev_inst_idx) &&
+    !rvc_mask(pred_prev_inst_idx)
+  val pred_cfi_valid = pred_cfi_is_edge || pred_cfi_is_rvc || pred_cfi_is_rvi
+  val pred_inst_idx = Mux(
+    pred_cfi_is_rvc || pred_cfi_is_edge,
+    io.req.pred_cfi_idx,
+    io.req.pred_cfi_idx-1.U)
+  val jal_idx = PriorityEncoder(jal_mask)
+  val ret_idx = PriorityEncoder(ret_mask)
+  val has_jal = jal_mask.orR
+  val has_ret = ret_mask.orR
 
-  target_redirect   := io.req.pred_taken&&
-  ((io.req.pred_cfi_idx===PriorityEncoder(jal_mask))&&
-  target(PriorityEncoder(jal_mask)) =/= pred_target ||
-  io.req.pred_cfi_idx<PriorityEncoder(jal_mask)&&br_mask(io.req.pred_cfi_idx).asBool&&
-  target(io.req.pred_cfi_idx) =/= pred_target
-  )&& ctrl_mask=/=0.U
-  notCfi_taken_redirect        := io.req.pred_taken && !ctrl_mask(io.req.pred_cfi_idx).asBool && decode_mask(io.req.pred_cfi_idx)
-  isNot_valid_redirect         := io.req.pred_taken && (!decode_mask(io.req.pred_cfi_idx)) 
+  jal_redirect       := io.req.pred_taken && has_jal && (jal_idx < pred_inst_idx) &&
+                          (jal_idx >= PriorityEncoder(decode_mask)) ||
+                          (!io.req.pred_taken) && (jal_mask =/= 0.U)
+  ret_redirect       := io.req.pred_taken && has_ret && (ret_idx < pred_inst_idx) &&
+                          (ret_idx >= PriorityEncoder(decode_mask)) ||
+                          (!io.req.pred_taken) && (ret_mask =/= 0.U)
+
+  target_redirect   := io.req.pred_taken &&
+  pred_cfi_valid &&
+  (has_jal && (pred_inst_idx === jal_idx) &&
+  target(jal_idx) =/= pred_target ||
+  br_mask(pred_inst_idx).asBool && (!has_jal || pred_inst_idx < jal_idx) &&
+  target(pred_inst_idx) =/= pred_target
+  ) && ctrl_mask =/= 0.U
+  notCfi_taken_redirect := io.req.pred_taken && pred_cfi_valid &&
+    !ctrl_mask(pred_inst_idx).asBool
+  isNot_valid_redirect := io.req.pred_taken && !pred_cfi_valid
 
   // val f3_corret_predecode = WireInit(f3_valid&&(f3_target_redirect||f3_jal_redirect || f3_ret_redirect)|| backend_resteer)
   // // // val f3_target_redirect_cond4 = !f3_req.ftq_offset.valid && f3_has_ctrl && (f3_req.ftq_entry.target=/=f3_br_infos(PriorityEncoder(f3_br_mask)).target)
@@ -261,15 +285,23 @@ class PreChecker(implicit p: Parameters) extends BoomModule()(p)
   // val f3_target_redirect_idx = Mux()
   val cfi_valid         = jal_redirect  || target_redirect || (io.req.pred_taken && !(notCfi_taken_redirect || isNot_valid_redirect))
   val jal_first         = PriorityEncoder(jal_mask) < PriorityEncoder(ret_mask)
-  val cfi_idx           = MuxCase(io.req.pred_cfi_idx, Seq(
-                              (jal_redirect ) -> PriorityEncoder(jal_mask),
-                              (target_redirect) -> io.req.pred_cfi_idx,
-                              (io.req.pred_taken && !(notCfi_taken_redirect || isNot_valid_redirect)) -> io.req.pred_cfi_idx
+  val cfi_idx           = MuxCase(pred_inst_idx, Seq(
+                              (jal_redirect ) -> jal_idx,
+                              (target_redirect) -> pred_inst_idx,
+                              (io.req.pred_taken && !(notCfi_taken_redirect || isNot_valid_redirect)) -> pred_inst_idx
                             )) 
                       
-  retTarget       := fetchAlign(io.req.pc) + PriorityEncoder(ret_mask)*coreInstBytes.U+Mux(io.req.rvc_mask(PriorityEncoder(ret_mask)),2.U,4.U)
-  notCfi_target   := fetchAlign(io.req.pc) + (io.req.pred_cfi_idx)*coreInstBytes.U+Mux(io.req.rvc_mask(io.req.pred_cfi_idx),2.U,4.U)
-  notValid_target := fetchAlign(io.req.pc) + (io.req.pred_cfi_idx)*coreInstBytes.U+2.U
+  retTarget       := Mux(ret_idx===0.U && io.req.edge_inst , fetchAlign(io.req.pc) + ret_idx*coreInstBytes.U+Mux(io.req.rvc_mask(ret_idx),2.U,4.U) - 2.U,
+       fetchAlign(io.req.pc) + ret_idx*coreInstBytes.U+Mux(io.req.rvc_mask(ret_idx),2.U,4.U))
+  notCfi_target   := Mux(
+    pred_cfi_is_edge,
+    fetchAlign(io.req.pc)+2.U,
+    fetchAlign(io.req.pc) + pred_inst_idx * coreInstBytes.U +
+      Mux(io.req.rvc_mask(pred_inst_idx), 2.U, 4.U))
+  notValid_target := Mux(
+    pred_cfi_is_edge,
+    fetchAlign(io.req.pc)+2.U,
+    fetchAlign(io.req.pc) + io.req.pred_cfi_idx * coreInstBytes.U + 2.U)
   seqTarget       := Mux(ret_redirect, retTarget,
                       Mux(notCfi_taken_redirect, notCfi_target,
                           Mux(isNot_valid_redirect, notValid_target,
@@ -277,9 +309,9 @@ class PreChecker(implicit p: Parameters) extends BoomModule()(p)
   redirectTarget := Mux(jal_redirect || target_redirect,target(cfi_idx),Mux(notCfi_taken_redirect || isNot_valid_redirect || ret_redirect,seqTarget,io.req.pred_target) )
   val final_mask        = MuxCase(decode_mask,Seq(
                               (jal_redirect  || target_redirect)            -> (decode_mask & MaskLower(UIntToOH(cfi_idx))) ,
-                              ret_redirect                                  -> (decode_mask & MaskLower(UIntToOH(PriorityEncoder(ret_mask)))),
-                              (notCfi_taken_redirect || isNot_valid_redirect) -> (decode_mask & MaskLower(UIntToOH(io.req.pred_cfi_idx))),
-                              (io.req.pred_taken && !(notCfi_taken_redirect || isNot_valid_redirect))  -> (decode_mask & MaskLower(UIntToOH(io.req.pred_cfi_idx)))
+                              ret_redirect                                  -> (decode_mask & MaskLower(UIntToOH(ret_idx))),
+                              (notCfi_taken_redirect || isNot_valid_redirect) -> (decode_mask & MaskLower(UIntToOH(pred_inst_idx))),
+                              (io.req.pred_taken && !(notCfi_taken_redirect || isNot_valid_redirect))  -> (decode_mask & MaskLower(UIntToOH(pred_inst_idx)))
                               ))
     // Mux(cfi_valid,decode_mask & MaskLower(UIntToOH(redirect_idx)) ,
     //                           Mux(ret_redirect,decode_mask & (MaskLower(UIntToOH(PriorityEncoder(ret_mask)))),
@@ -306,7 +338,7 @@ class PreChecker(implicit p: Parameters) extends BoomModule()(p)
                                           target_redirect || 
                                           ret_redirect || 
                                           notCfi_taken_redirect || 
-                                          isNot_valid_redirect&&(io.req.pred_cfi_idx===(fetchWidth-1).U && !io.req.rvc_mask(fetchWidth-1))||
+                                          isNot_valid_redirect && (io.req.pred_cfi_idx === (fetchWidth-1).U) && !decode_mask(fetchWidth-1)||
                                           io.req.pred_taken && !(notCfi_taken_redirect || isNot_valid_redirect))
                           
 }

@@ -356,7 +356,10 @@ TODO:s2阶段如果阻塞（fb 满）并且icache hit，此时会出现问题，
   f3_cfi_idx := Mux(
     f3_edge_inst && f3_cfiPosition === 0.U,
     0.U,
-    Mux(f3_decode_mask(f3_cfiPosition), f3_cfiPosition, f3_cfiPosition - 1.U))
+    Mux(
+      f3_decode_mask(f3_cfiPosition) || f3_cfiPosition === 0.U,
+      f3_cfiPosition,
+      f3_cfiPosition - 1.U))
   f3_cfi_valid := prechecker.io.resp.cfiPosition.valid
   f3_redirect_type := prechecker.io.resp.redirect_type
 

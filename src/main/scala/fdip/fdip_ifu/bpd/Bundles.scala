@@ -120,7 +120,6 @@ class BranchPredictionRespBundle(implicit p: Parameters) extends BoomBundle()(p)
     f1.valid -> f1))
 
   def selectedRespIdxForFtq = PriorityMux(Seq(
-    // (f3.valid && f3.hasRedirect) -> BP_S3,
     (f2.valid && f2.hasRedirect) -> BP_S2,
     f1.valid -> BP_S1))
 

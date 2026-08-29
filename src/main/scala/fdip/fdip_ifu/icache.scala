@@ -204,18 +204,17 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
     s2_respData(i) := missResp.data((i+1)*bankBits-1,i*bankBits)
   }
   val s2_resp_data  = fetchData(s2_start_bank,s2_respData)
-  val ifu_resp_data    = Mux(missRespVal&&s2_resp_hit,s2_resp_data,s2_data)
-  // IFU s3 ready信号到来之前，保存ifu_resp_data，防止icache数据丢失
-  val ifu_resp_data_reg  = RegInit(0.U((outer.icacheParams.fetchBytes*8).W))
-  val ifu_resp_data_valid= RegInit(false.B)
-  when(s2_valid&&(s2_hit||s2_resp_hit)&& !io.ifu_s3_ready && !io.flush){
-    ifu_resp_data_reg := ifu_resp_data
-  }
-  when(io.flush){
+  val ifu_resp_data = Mux(s2_resp_hit, s2_resp_data, s2_data)
+  val newRespValid  = s2_valid && (s2_hit || s2_resp_hit)
+  // IFU s3 ready信号到来之前，保存 response，防止 miss response 的一拍脉冲或数据被覆盖。
+  val ifu_resp_data_reg   = RegInit(0.U((outer.icacheParams.fetchBytes*8).W))
+  val ifu_resp_data_valid = RegInit(false.B)
+  when (io.flush || io.s2_kill) {
     ifu_resp_data_valid := false.B
-  }.elsewhen(s2_valid&&(s2_hit||s2_resp_hit)&& !io.ifu_s3_ready){
+  }.elsewhen (newRespValid && !io.ifu_s3_ready) {
+    ifu_resp_data_reg   := ifu_resp_data
     ifu_resp_data_valid := true.B
-  }.elsewhen(s2_fire){
+  }.elsewhen (s2_fire) {
     ifu_resp_data_valid := false.B
   }
   when(io.s1_kill||io.flush){
@@ -237,7 +236,7 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   s1_fire           := s1_valid && s2_ready
   s1_ready          := s1_fire || !s1_valid
   s2_ready          := s2_fire || !s2_valid
-  s2_fire           := s2_valid && (s2_hit ||s2_resp_hit) && io.ifu_s3_ready
+  s2_fire           := s2_valid && (s2_hit || s2_resp_hit || ifu_resp_data_valid) && io.ifu_s3_ready
   
   
   dontTouch(missResp)
@@ -389,7 +388,7 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   io.resp.bits.ae     := DontCare
   io.resp.bits.replay := DontCare
   io.resp.bits.data   := Mux(ifu_resp_data_valid, ifu_resp_data_reg, ifu_resp_data)
-  io.resp.valid       := (s2_valid && (s2_hit || s2_resp_hit || ifu_resp_data_valid))&& !io.s2_kill && !io.flush
+  io.resp.valid       := (newRespValid || ifu_resp_data_valid) && !io.s2_kill && !io.flush
 
   tl_out.a <> missunit.io.acquire
   missunit.io.grant <> tl_out.d

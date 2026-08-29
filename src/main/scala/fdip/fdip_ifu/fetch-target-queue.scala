@@ -299,9 +299,8 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   /*                                   From Bpu                                 */
   /* -------------------------------------------------------------------------- */
   io.fromBpu.resp.ready := (!full)
-  when(io.toICache.req.fire){
-    ifu_ptr := CirWrapInc(ifu_ptr)
-  }
+
+
   // bpu info process
   val f1_resp    = io.fromBpu.resp.bits.f1
   val f1_mask    = fetchMask(f1_resp.pc)
@@ -355,26 +354,10 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
 
   when(bpu_in_wen){
     pc_mem(ftqMemIdx(bpu_in_resp_ptr)) := bpu_in_entry
-    cfi_offset(ftqMemIdx(bpu_in_resp_ptr)).valid := !bpu_in_resp.pred.attribute.isNone
+    cfi_offset(ftqMemIdx(bpu_in_resp_ptr)).valid := !bpu_in_resp.pred.attribute.isNone && bpu_in_resp.pred.taken 
     cfi_offset(ftqMemIdx(bpu_in_resp_ptr)).bits := bpu_in_resp.pred.cfiPosition
   }
-  //Bpu ptr update
-  bpu_ptr := Mux(bpu_in_wen&&bpu_in_stage===BP_S1,CirWrapInc(bpu_in_resp_ptr),bpu_ptr)
-  pf_ptr  := Mux(io.toPrefetch.fire&& !isAfter(pf_ptr,ifu_ptr),CirWrapInc(pf_ptr),pf_ptr)
-  /* --------------------------------- ptr fix -------------------------------- */
-/* 
-1.BPU发生重定向的BPU_PTR<=IFU_PTR,此时说明这个发生重定向的指令已经送入IFU，此时需要刷新这个block，但然后恢复指针
-2.BPU_PTR>IFU_PTR,此时说明发生重定向的block并未送入IFU，此时不对IFU指针操作，也不用刷新IFU
- */
-  when(bpu_s2_redirect){
-    bpu_ptr := CirWrapInc(io.fromBpu.resp.bits.f2.ftq_idx)
-    when(!isBefore(io.fromBpu.resp.bits.f2.ftq_idx,ifu_ptr)){
-      ifu_ptr :=io.fromBpu.resp.bits.f2.ftq_idx
-    }
-    when(!isBefore(io.fromBpu.resp.bits.f2.ftq_idx,pf_ptr)){
-      pf_ptr  := io.fromBpu.resp.bits.f2.ftq_idx
-    }
-  }
+  
 
 
   //BPU other mem write
@@ -389,9 +372,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
 /*                                  From IFU                                  */
 /* -------------------------------------------------------------------------- */
 //本阶段送入的br_mask一定是对的，无论分支是否错误
-/* 
-这里需要再议，在BTB从来没找到的分支认为没有信息，即使此时解码为br，仍然不会更新ghr
- */
+
   val new_entry = Wire(new FTQBundle)
   val prev_ghist = RegInit((0.U).asTypeOf(new GlobalHistory))
   val prev_entry = RegInit((0.U).asTypeOf(new FTQBundle))
@@ -450,18 +431,14 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   bpd_update_commit                  := do_update_commit //第二个周期读出update信息，然后送入bpu
 
 
-  deq_ptr                   := Mux(io.fromBackend.deq.valid,io.fromBackend.deq.bits,deq_ptr)
-  commit_ptr                := Mux(do_update_commit,CirWrapInc(commit_ptr),commit_ptr)
+
 
 /* -------------------------------- fix entry ------------------------------- */
   // val br_update_entry
 
 
   when(io.fromBackend.redirect_val){
-    //恢复bpu_ptr
-    bpu_ptr             := CirWrapInc(io.fromBackend.redirect_ftq_idx)
-    ifu_ptr             := CirWrapInc(io.fromBackend.redirect_ftq_idx)
-    pf_ptr              := CirWrapInc(io.fromBackend.redirect_ftq_idx)
+
     
     when(io.fromBackend.brupdate.b2.mispredict){
       // CFI position is the terminal halfword of the instruction.  pc_lob is
@@ -503,14 +480,40 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
     }
 
     pd_mem(bpd_update_idx) := bpd_redirect_entry
-  }.elsewhen(io.fromIfu.redirect_from_fetch){//IFU redirect do not need to fix pd_mem
-    bpu_ptr             := CirWrapInc(io.fromIfu.redirect_ftq_idx)
-    ifu_ptr             := CirWrapInc(io.fromIfu.redirect_ftq_idx)
-    pf_ptr              := CirWrapInc(io.fromIfu.redirect_ftq_idx)
   }
 
-  
-// println(f"width${ifu_ptr.getWidth}")
+  /* -------------------------------------------------------------------------- */
+  /*                                  PTR Update                                */
+  /* -------------------------------------------------------------------------- */
+
+  pf_ptr  := MuxCase(pf_ptr,
+    Seq(
+      io.fromBackend.redirect_val -> CirWrapInc(io.fromBackend.redirect_ftq_idx),
+      io.fromIfu.redirect_from_fetch -> CirWrapInc(io.fromIfu.redirect_ftq_idx),
+     (bpu_s2_redirect && !isBefore(io.fromBpu.resp.bits.f2.ftq_idx,pf_ptr)) -> io.fromBpu.resp.bits.f2.ftq_idx ,
+      (io.toPrefetch.fire&& !isAfter(pf_ptr,ifu_ptr)) -> CirWrapInc(pf_ptr)
+  ))
+
+  bpu_ptr := MuxCase(bpu_ptr,
+    Seq(
+      io.fromBackend.redirect_val -> CirWrapInc(io.fromBackend.redirect_ftq_idx),
+      io.fromIfu.redirect_from_fetch -> CirWrapInc(io.fromIfu.redirect_ftq_idx),
+      bpu_s2_redirect -> CirWrapInc(io.fromBpu.resp.bits.f2.ftq_idx),
+      (bpu_in_wen && (bpu_in_stage === BP_S1)) ->CirWrapInc(bpu_in_resp_ptr)
+  ))
+
+  ifu_ptr := MuxCase(ifu_ptr,
+    Seq(
+      io.fromBackend.redirect_val -> CirWrapInc(io.fromBackend.redirect_ftq_idx),
+      io.fromIfu.redirect_from_fetch -> CirWrapInc(io.fromIfu.redirect_ftq_idx),
+      (bpu_s2_redirect && !isBefore(io.fromBpu.resp.bits.f2.ftq_idx,ifu_ptr))  -> io.fromBpu.resp.bits.f2.ftq_idx,
+      io.toICache.req.fire ->  CirWrapInc(ifu_ptr)
+  ))
+
+  deq_ptr                   := Mux(io.fromBackend.deq.valid,io.fromBackend.deq.bits,deq_ptr)
+  commit_ptr                := Mux(do_update_commit,CirWrapInc(commit_ptr),commit_ptr)
+
+
   /* -------------------------------------------------------------------------- */
   /*                                  To ICache                                 */
   /* -------------------------------------------------------------------------- */
@@ -561,7 +564,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   /*
   * if redirect hit btb,use backend_hitBtbNum,otherwise use backend_hitBtbNum + 1
   */
-  val backend_redirectPosition = Mux(io.fromBackend.brupdate.b2.uop.is_rvc,
+  val backend_redirectPosition = Mux(io.fromBackend.brupdate.b2.uop.is_rvc || io.fromBackend.brupdate.b2.uop.edge_inst,
     io.fromBackend.brupdate.b2.uop.pc_lob/(coreInstBytes.U),io.fromBackend.brupdate.b2.uop.pc_lob/(coreInstBytes.U) + 1.U)
   val redirect_needUpdateGhist = io.fromBackend.redirect_val && io.fromBackend.brupdate.b2.mispredict && io.fromBackend.brupdate.b2.uop.is_br
   val backend_redirect_meta = meta(ftqMemIdx(io.fromBackend.redirect_ftq_idx))
@@ -607,7 +610,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
 /*                                 To Prefetch                                */
 /* -------------------------------------------------------------------------- */
 
-  io.toPrefetch.valid := (!isEmpty(pf_ptr,bpu_ptr)) && !(io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch)
+  io.toPrefetch.valid := (!isEmpty(pf_ptr,bpu_ptr)) && !(io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch || (bpu_s2_redirect && !isBefore(io.fromBpu.resp.bits.f2.ftq_idx,pf_ptr)))
   io.toPrefetch.bits.fetch_pc := pc_mem(ftqMemIdx(pf_ptr)).start_pc
   io.toPrefetch.bits.mask     := pc_mem(ftqMemIdx(pf_ptr)).mask
 /* -------------------------------------------------------------------------- */

@@ -110,7 +110,7 @@ class FetchBuffer(implicit p: Parameters) extends BoomModule
     in_uops(i).inst           := io.enq.bits.exp_insts(i)
     in_uops(i).debug_inst     := io.enq.bits.insts(i)
     in_uops(i).is_rvc         := io.enq.bits.insts(i)(1,0) =/= 3.U
-    in_uops(i).taken          := io.enq.bits.cfiPosition.bits === Mux(in_uops(i).is_rvc, i.U, (i + 1).U) && io.enq.bits.cfiPosition.valid
+    in_uops(i).taken          := io.enq.bits.cfiPosition.bits === Mux(in_uops(i).is_rvc || in_uops(i).edge_inst, i.U, (i + 1).U) && io.enq.bits.cfiPosition.valid
 
     in_uops(i).xcpt_pf_if     := io.enq.bits.xcpt_pf_if
     in_uops(i).xcpt_ae_if     := io.enq.bits.xcpt_ae_if

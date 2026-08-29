@@ -422,7 +422,11 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
 
     brinfo.jalr_target := jalr_target
 
-    val cfiPosition = Mux(uop.is_rvc, ((uop.pc_lob ))(log2Ceil(fetchWidth),1), ((uop.pc_lob ))(log2Ceil(fetchWidth),1)+1.U)
+    // cfiPosition encodes the terminal halfword.  An edge RVI starts in
+    // the previous fetch block but terminates at slot 0 of this block.
+    val cfiPosition = Mux(uop.is_rvc || uop.edge_inst,
+      ((uop.pc_lob))(log2Ceil(fetchWidth),1),
+      ((uop.pc_lob))(log2Ceil(fetchWidth),1) + 1.U)
 
     when (pc_sel === PC_JALR) {
       mispredict := !io.get_ftq_pc.next_val ||

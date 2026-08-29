@@ -50,12 +50,12 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p) 
   }
   val s1_hits      = s1_hit_ohs.reduce(_||_)
   val s1_hit_entry = PriorityEncoder(s1_hit_ohs)
-
-  io.resp.valid       := s1_hits && s1_valid
+  val s1_instOffset = s1_pc(log2Ceil(fetchBytes)-1,1)
+  io.resp.valid              := s1_hits && s1_valid && btb_entries(s1_hit_entry).position >= s1_instOffset
   io.resp.bits.attribute     := Mux(s1_hits, btb_entries(s1_hit_entry).attribute, 0.U.asTypeOf(new BranchAttribute))
   io.resp.bits.cfiPosition   := Mux(s1_hits, btb_entries(s1_hit_entry).position, 0.U)
-  io.resp.bits.target        := getFullTarget(s1_pc, btb_entries(s1_hit_entry).target)
-  io.resp.bits.taken         := s1_hits
+  io.resp.bits.target        := getFullTarget(s1_pc, btb_entries(s1_hit_entry).target) 
+  io.resp.bits.taken         := s1_hits && btb_entries(s1_hit_entry).position >= s1_instOffset
 
 
   val t0_valid = io.train.valid

@@ -17,7 +17,7 @@ import boom.fdip.ifu.bpd.ubtb._
 import boom.fdip.ifu.bpd.l1btb._
 import boom.fdip.ifu.bpd.tage._
 import boom.fdip.ifu.bpd.ras._
-
+//TODO: add taken cmp
 class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
 {
   val io = IO(new Bundle {
