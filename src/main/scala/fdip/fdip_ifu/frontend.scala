@@ -417,7 +417,7 @@ class BoomFrontendModule(outer: FDIPBoomFrontend) extends LazyModuleImp(outer)
   tlb.io.req(0).bits.passthrough  := false.B
   tlb.io.req(0).bits.size         := log2Ceil(coreInstBytes * fetchWidth).U
   tlb.io.req(0).bits.v            := io.ptw.status.v
-  tlb.io.req(0).bits.prv       := io.ptw.status.prv
+  tlb.io.req(0).bits.prv          := io.ptw.status.prv
 
   tlb.io.req(1).valid             := ftq.io.toPrefetch.valid
   tlb.io.req(1).bits.cmd          := DontCare

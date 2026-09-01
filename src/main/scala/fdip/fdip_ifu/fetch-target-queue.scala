@@ -163,6 +163,7 @@ class FTQToBPUIO(implicit p: Parameters) extends BoomBundle
   // val bpdupdate = Output(Valid(new BranchPredictionUpdate))
 
   val ras_update = Output(Bool())
+  val attribute = Output(new BranchAttribute)
   val ras_updateState = Output(new RasState())
 }
 
@@ -378,7 +379,8 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   val prev_entry = RegInit((0.U).asTypeOf(new FTQBundle))
   new_entry.cfiPosition           := io.fromIfu.predecode_infos.bits.br_infos.cfiPosition
   new_entry.cfi_taken         := io.fromIfu.predecode_infos.bits.br_infos.cfi_taken
-  new_entry.cfi_mispredicted  := false.B
+  new_entry.cfi_mispredicted  :=     io.fromIfu.redirect_from_fetch && io.fromIfu.predecode_infos.bits.br_infos.cfiPosition.valid
+
   new_entry.attribute          := io.fromIfu.predecode_infos.bits.br_infos.attribute
   new_entry.br_mask           := io.fromIfu.predecode_infos.bits.br_infos.br_mask 
   //pfc入队只要没有full就行，这个full条件其实是pc_mem的，写入的地址来自ftq传往ifu的指针
@@ -602,7 +604,8 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   //TODO: remove this, we should not repair BTB on IFU redirect
   io.toBPU.redirect_btb_repair                   := RegNext(io.fromIfu.redirect_btb)//只有ifu的重定向才会early修复btb,其他的就是commit更新
   //RAS目前只修复由于call指令导致的错误（一般是未识别导致的）
-  io.toBPU.ras_update                                   := bpd_update_mispredict && (ras_update_info.attribute.isCall)
+  io.toBPU.ras_update                                   := bpd_update_mispredict && (ras_update_info.attribute.isCall || ras_update_info.attribute.isReturn)
+  io.toBPU.ras_attribute                                := ras_update_info.attribute
   io.toBPU.ras_updateState.idx                          := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).rasState.idx)
   io.toBPU.ras_updateState.top                          := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).rasState.top)
 

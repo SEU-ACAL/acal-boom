@@ -21,7 +21,7 @@ import freechips.rocketchip.tile._
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.util._
 import freechips.rocketchip.util.property._
-import freechips.rocketchip.rocket.{HasL1ICacheParameters, ICacheParams, ICacheErrors, ICacheReq}
+import freechips.rocketchip.rocket.{HasL1ICacheParameters, ICacheParams, ICacheErrors, ICacheReq, TLBReq, TLBResp}
 import boom.fdip.ifu._
 
 
@@ -72,6 +72,10 @@ class ICacheBundle(val outer: ICache) extends BoomBundle()(outer.p)
 {
   val req               = Flipped(Decoupled(new ICacheReq))
   val prefetch_req      = Flipped(DecoupledIO(new FTQToPrefetchIO))
+  val prefetch_tlb_req  = DecoupledIO(new TLBReq(log2Ceil(fetchBytes)))
+  val prefetch_tlb_resp = Input(new TLBResp(log2Ceil(fetchBytes)))
+  val prefetch_tlb_v    = Input(Bool())
+  val prefetch_tlb_prv  = Input(UInt(PRV.SZ.W))
   val s1_paddr          = Input(UInt(paddrBits.W)) // delayed one cycle w.r.t. req
   val s1_prefetch_paddr = Input(UInt(paddrBits.W)) // delayed one cycle w.r.t. req
   val s1_prefetch_kill  = Input(Bool()) // 此时发生tlb miss，预取失效
@@ -270,8 +274,6 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   //现在采用复制的方法去保证正常取指和prefetch同时可以访问
   val tag_array = Seq.fill(2){SyncReadMem(nSets, Vec(nWays, UInt(tagBits.W)))}
   val tag_rdata = tag_array(0).read(s0_vaddr(untagBits-1, blockOffBits), !missRespVal && s0_valid)//for normal fetch
-  val prefetch_rdata = tag_array(1).read(io.prefetch_req.bits.fetch_pc(untagBits-1, blockOffBits), !missRespVal)//for prefetch
-  val s1_prefetch_hit = Wire(Vec(nWays, Bool()))
   when (missRespVal) {
     for(i <- 0 until 2){
       when (!invalidated && !io.invalidate) {
@@ -311,13 +313,10 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   for (i <- 0 until nWays) {
 
     val s1_vb = vb_array(Cat(i.U, s1_idx))
-    val s1_prefetch_vb = vb_array(Cat(i.U, s1_prefetch_idx))
     val tag = tag_rdata(i)
     s1_tag_hit(i) := s1_vb && tag === s1_tag
-    s1_prefetch_hit(i) := s1_prefetch_vb && prefetch_rdata(i) === s1_prefetch_tag
   }
   assert(PopCount(s1_tag_hit) <= 1.U)
-  dontTouch(s1_prefetch_hit)
   val ramDepth = nSets
 
   val dataArrays =     (0 until nWays).map { way =>
@@ -368,20 +367,15 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   missunit.io.fetch_req.bits.vSetIdx  := s2_idx
   missunit.io.fetch_req.bits.way      := repl_way
   missunit.io.fencei                  := io.invalidate
-  missunit.io.prefetch_req            := DontCare
   missunit.io.flush                   := io.flush||io.invalidate//TODO: add prefetch and flush
-  
+
+  missunit.io.prefetch_req            := DontCare
   prefetch_pipe.io.s1_kill := io.s1_prefetch_kill
   prefetch_pipe.io.refilled := missRespVal
   prefetch_pipe.io.req <>io.prefetch_req
   prefetch_pipe.io.flush := io.flush||io.invalidate
   prefetch_pipe.io.s1_paddr := io.s1_prefetch_paddr
   missunit.io.prefetch_req <> prefetch_pipe.io.prefetch_req
-  //预取的接口也需要bypass
-  /* 
-  cycle0：miss数据未返回，预取接口读tag
-  cycle1：miss数据返回，预取接口的hit需要去监听miss，否则会重复写入
-   */
   prefetch_pipe.io.s1_tag_hit := s1_prefetch_hit.reduce(_||_) || missRespVal&&(missResp.vSetIdx===s1_prefetch_idx)&&(missResp.blkPaddr>>idxBits)===s1_prefetch_tag
 
   // val refill_resp_dat = RegNext(fetchData())

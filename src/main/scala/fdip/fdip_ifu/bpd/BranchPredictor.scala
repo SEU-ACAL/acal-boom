@@ -222,6 +222,14 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   // Keep a repaired RAS state until the stalled s1 packet can advance.  The
   // repair condition is only a pulse, while s1_valid may remain asserted.
   val s2_rasRepair = s2_redirect || f2_correct_f1_ghist
+
+  val redirect_ras_repair = io.fromFtq.ras_update
+  val redirect_rasState = io.fromFtq.ras_updateState
+  val redirect_ras_attribute = io.fromFtq.ras_attribute
+  val redirect_ras_newState = WireInit(redirect_rasState)
+  redirect_ras_newState.idx := Mux(redirect_ras_attribute.isCall,WrapInc(redirect_rasState.idx, nRasEntries),WrapDec(redirect_rasState.idx, nRasEntries))
+
+
   when (!s1_valid || s1_fire) {
     s2_newRasStateHoldValid := false.B
   }
@@ -261,7 +269,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   s0_rasState           := MuxCase((0.U).asTypeOf(new RasState),
   Seq(
     (RegNext(reset.asBool) && !reset.asBool) -> (0.U).asTypeOf(new RasState),
-    io.fromFtq.ras_update                  -> io.fromFtq.ras_updateState,
+    io.fromFtq.ras_update                  -> redirect_ras_newState,
     (s2_isCallOrRet)       -> s2_predRasState
   )) 
   //redirect and clear
@@ -278,9 +286,10 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
 
   //TODO:fix RAS
   ras.io.read_idx    := s1_rasState.idx
-  ras.io.write_valid := s2_valid && useRAS.B && s2_taken && s2_firstTakenBranch.bits.attribute.isCall
-  ras.io.write_addr  := s2_alignPc + (s2_prediction.cfiPosition<<1.U) + 2.U
-  ras.io.write_idx   := WrapInc(s2_rasState.idx, nRasEntries)
+  ras.io.write_valid := s2_valid && useRAS.B && s2_taken && s2_firstTakenBranch.bits.attribute.isCall || redirect_ras_repair
+  ras.io.write_addr  := Mux(redirect_ras_repair && redirect_ras_attribute.isCall,,
+      Mux(redirect_ras_repair && redirect_ras_attribute.isReturn,s2_rasState.top,s2_alignPc + (s2_prediction.cfiPosition<<1.U) + 2.U))
+  ras.io.write_idx   := s2_rasState.idx
 
 
   io.toFtq.resp.bits.f1.pred    := s1_prediction.bits

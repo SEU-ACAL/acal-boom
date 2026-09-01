@@ -127,8 +127,7 @@ with L1BTBHelper{
 
 	val t1_attributeMismatch = t1_hit &&
 		t1_cfi.attribute.asUInt =/= Mux1H(t1_hitMask, t1_meta.map(_.bits.attribute.asUInt))
-	val t1_entryNeedUpdate = t1_valid && (t1_attributeMismatch ||
-		t1_cfi.mispredict)
+	val t1_entryNeedUpdate = t1_valid && t1_cfi.mispredict && (t1_attributeMismatch || !t1_hit)
 	val randomWay =LFSR(nWays, t1_entryNeedUpdate)(log2Ceil(nWays) - 1, 0)
 	val t1_entry = Wire(new BTBEntry(offsetSz, tagSz))
 		t1_entry.position := t1_cfi.position
