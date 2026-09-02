@@ -27,6 +27,8 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
 
     val wayLookupWrite = DecoupledIO(new WayLookupWrite)
     val missReq        = DecoupledIO(new ICacheMissReq())
+    // Refill response used to bypass stale SRAM metadata while S1 is held.
+    val missResp       = Flipped(ValidIO(new ICacheMissResp()))
   })
 
   private object S1FsmState extends ChiselEnum {
@@ -47,8 +49,12 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
   private val s1_valid     = RegInit(false.B)
   private val s1_vaddr     = Reg(UInt(vaddrBitsExtended.W))
   private val s1_vSetIdx   = Reg(UInt(nSetsBits.W))
-  private val s1_pTag      = Reg(UInt(tagBits.W))
-  private val s1_waymask   = Reg(UInt(nWays.W))
+  private val s1_pTag      = RegInit(0.U(tagBits.W))
+  private val s1_metaRegWaymask = RegInit(0.U(nWays.W))
+  private val s1_metaRegValid = RegInit(false.B)
+  private val s1_missRegValid = RegInit(false.B)
+  private val s1_missRegTag = RegInit(0.U(tagBits.W))
+  private val s1_missRegWaymask = RegInit(0.U(nWays.W))
   private val s1_tlbDone   = RegInit(false.B)
   private val s1_metaDone  = RegInit(false.B)
 
@@ -76,21 +82,46 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
   private val s1_tlbHit = s1_itlbResend && io.tlbReq.fire && !io.tlbResp.miss
   private val s1_tlbFinish = s1_tlbDone || s1_tlbHit
 
-  private val s1_metaResend = s1_valid && (
+  private val s1_metaNeedResend = s1_valid && (
     (s1_state === S1FsmState.ItlbResend && s1_tlbFinish) ||
       (s1_state === S1FsmState.MetaResend)
   )
-  io.metaRead.req.valid := !io.flush && (s0_issue || s1_metaResend)
-  io.metaRead.req.bits.vSetIdx := Mux(s1_metaResend, s1_vSetIdx, s0_vSetIdx)
+  io.metaRead.req.valid := !io.flush && (s0_issue || s1_metaNeedResend)
+  io.metaRead.req.bits.vSetIdx := Mux(s1_metaNeedResend, s1_vSetIdx, s0_vSetIdx)
+
   private val s1_metaRespValid = RegNext(io.metaRead.req.fire, false.B)
+  private val s1_metaFresh = io.metaRead.req.fire
+
   private val s1_metaPTag = Mux(s1_tlbHit,
     io.tlbResp.paddr(tagBits + untagBits - 1, untagBits), s1_pTag)
   private val s1_metaHitVec = io.metaRead.resp.map { resp =>
     resp.valid && (resp.bits.pTag === s1_metaPTag)
   }
-  private val s1_metaWaymask = Mux(s1_metaHitVec.reduce(_ || _), s1_metaHitVec.asUInt, 0.U)
+  // Source 2: metadata returned directly by the SRAM in this lookup.
+  private val s1_sramWaymask = Mux(s1_metaHitVec.reduce(_ || _), s1_metaHitVec.asUInt, 0.U)
+  // Source 3: metadata retained while S1 waits for a replay or downstream
+  // backpressure. The SRAM response is only a one-cycle pulse.
+  private val s1_metaBaseWaymask = Mux(
+    s1_metaRespValid,
+    s1_sramWaymask,
+    Mux(s1_metaRegValid && !s1_metaFresh, s1_metaRegWaymask, 0.U))
+  // Source 1: refill/MISS response bypass. A refill of the same tag makes its
+  // way valid; replacing the way with another tag invalidates the old hit.
+  private val s1_missSetMatch = s1_valid && s1_tlbFinish && io.missResp.valid &&
+    (io.missResp.bits.vSetIdx === s1_vSetIdx)
+  private val s1_missTag = io.missResp.bits.blkPaddr >> idxBits
+  private val s1_missWaymask = UIntToOH(io.missResp.bits.way, nWays)
+  private val s1_pendingMissValid = s1_metaRespValid && s1_missRegValid && !s1_missSetMatch
+  private val s1_metaMissValid = s1_missSetMatch || s1_pendingMissValid
+  private val s1_metaMissTag = Mux(s1_missSetMatch, s1_missTag, s1_missRegTag)
+  private val s1_metaMissWaymask = Mux(s1_missSetMatch, s1_missWaymask, s1_missRegWaymask)
+  private val s1_metaWaymask = Mux(
+    s1_metaMissValid,
+    Mux(s1_metaMissTag === s1_metaPTag,
+      s1_metaMissWaymask,
+      Mux(s1_metaMissWaymask === s1_metaBaseWaymask, 0.U, s1_metaBaseWaymask)),
+    s1_metaBaseWaymask)
   private val s1_metaFinishThisCycle = s1_metaRespValid && s1_tlbFinish
-  //TODO: may have some  problems
   private val s1_metaFinish = s1_metaDone || s1_metaFinishThisCycle
 
   assert(PopCount(s1_metaHitVec) <= 1.U, "prefetch S1 metadata has multiple matching ways")
@@ -99,6 +130,8 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
     s1_valid := false.B
     s1_tlbDone := false.B
     s1_metaDone := false.B
+    s1_metaRegValid := false.B
+    s1_missRegValid := false.B
   }.elsewhen (s0_fire) {
     s1_valid := true.B
     s1_vaddr := s0_vaddr
@@ -108,24 +141,43 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
       s1_pTag := io.tlbResp.paddr(tagBits + untagBits - 1, untagBits)
     }
     s1_metaDone := false.B
+    s1_metaRegValid := false.B
+    s1_missRegValid := false.B
   }.otherwise {
+    // A new SRAM read starts a fresh base value for this S1 request. A refill
+    // arriving in the same/next cycle can then repopulate the register.
+    when (io.metaRead.req.fire) {
+      s1_metaRegValid := false.B
+    }
     when (s1_tlbHit && s1_valid) {
       s1_tlbDone := true.B
       s1_pTag := io.tlbResp.paddr(tagBits + untagBits - 1, untagBits)
     }
     when (s1_metaFinishThisCycle && s1_valid) {
       s1_metaDone := true.B
-      s1_waymask := s1_metaWaymask
+      s1_metaRegWaymask := s1_metaWaymask
+      s1_metaRegValid := true.B
+    }
+    when (s1_missSetMatch && s1_valid && !s1_metaFinishThisCycle) {
+      s1_metaRegWaymask := s1_metaWaymask
+      s1_metaRegValid := true.B
+    }
+    when (s1_missSetMatch && s1_valid) {
+      s1_missRegValid := true.B
+      s1_missRegTag := s1_missTag
+      s1_missRegWaymask := s1_missWaymask
     }
     when (s1_fire) {
       s1_valid := false.B
       s1_tlbDone := false.B
       s1_metaDone := false.B
+      s1_metaRegValid := false.B
+      s1_missRegValid := false.B
     }
   }
 
   /* Once meta responds, retain its result for any later WayLookup backpressure. */
-  private val s1_waymaskForEnq = Mux(s1_metaFinishThisCycle, s1_metaWaymask, s1_waymask)
+  private val s1_waymaskForEnq = s1_metaWaymask
   private val s1_pTagForEnq = Mux(s1_tlbHit,
     io.tlbResp.paddr(tagBits + untagBits - 1, untagBits), s1_pTag)
   private val s1_wayCanEnq = s1_valid && s1_tlbFinish && s1_metaFinish &&
