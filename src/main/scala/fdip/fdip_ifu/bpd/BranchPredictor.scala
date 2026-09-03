@@ -223,9 +223,11 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   // repair condition is only a pulse, while s1_valid may remain asserted.
   val s2_rasRepair = s2_redirect || f2_correct_f1_ghist
 
-  val redirect_ras_repair = io.fromFtq.ras_update
-  val redirect_rasState = io.fromFtq.ras_updateState
-  val redirect_ras_attribute = io.fromFtq.ras_attribute
+  val redirect_ras_repair = io.fromFtq.ras_updateInfo.valid
+  val redirect_rasState = io.fromFtq.ras_updateInfo.bits.rasState
+  val redirect_ras_attribute = io.fromFtq.ras_updateInfo.bits.attribute
+  val reidrect_ras_cfiPosition = io.fromFtq.ras_updateInfo.bits.cfiPosition
+  val redirect_ras_startPc = io.fromFtq.ras_updateInfo.bits.startPc
   val redirect_ras_newState = WireInit(redirect_rasState)
   redirect_ras_newState.idx := Mux(redirect_ras_attribute.isCall,WrapInc(redirect_rasState.idx, nRasEntries),WrapDec(redirect_rasState.idx, nRasEntries))
 
@@ -287,9 +289,9 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   //TODO:fix RAS
   ras.io.read_idx    := s1_rasState.idx
   ras.io.write_valid := s2_valid && useRAS.B && s2_taken && s2_firstTakenBranch.bits.attribute.isCall || redirect_ras_repair
-  ras.io.write_addr  := Mux(redirect_ras_repair && redirect_ras_attribute.isCall,,
-      Mux(redirect_ras_repair && redirect_ras_attribute.isReturn,s2_rasState.top,s2_alignPc + (s2_prediction.cfiPosition<<1.U) + 2.U))
-  ras.io.write_idx   := s2_rasState.idx
+  ras.io.write_addr  := Mux(redirect_ras_repair && redirect_ras_attribute.isCall,redirect_ras_startPc + (redirect_ras_cfiPosition<<1.U) + 2.U,
+      Mux(redirect_ras_repair && redirect_ras_attribute.isReturn,redirect_rasState.top,s2_alignPc + (s2_prediction.cfiPosition<<1.U) + 2.U))
+  ras.io.write_idx   := Mux(redirect_ras_repair, redirect_rasState.idx, s2_rasState.idx)
 
 
   io.toFtq.resp.bits.f1.pred    := s1_prediction.bits

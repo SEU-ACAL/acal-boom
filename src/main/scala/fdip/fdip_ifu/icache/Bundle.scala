@@ -29,7 +29,7 @@ class MetaReadBundle(implicit p: Parameters) extends ICacheBundle {
   val resp = Vec(nWays,Flipped(ValidIO(new MetaArrayResp())))
 }
 class PtwReadBundle(implicit p: Parameters) extends ICacheBundle {
-  val cmd  = Bits(M_SZ.W)
+  val v  = Bool()
   val prv = UInt(PRV.SZ.W)
 }
 
@@ -43,11 +43,16 @@ class WayLookupWrite(implicit p: Parameters) extends ICacheBundle {
   val entry:          WayLookupEntry          = new WayLookupEntry
   val ftqIdx = UInt(log2Ceil(ftqSz).W)
 }
+
 class WayLookupToMainPipe(implicit p: Parameters) extends ICacheBundle {
   val entry = new WayLookupEntry
   //TODO: add exception signals
 }
-
+class FTQToMainPipeIO(implicit p: Parameters) extends BoomBundle
+{
+  val fetch_pc  = UInt(vaddrBitsExtended.W)
+  val ftqIdx = UInt(log2Ceil(ftqSz).W)
+}
 
 class ICacheMissReq(implicit p: Parameters) extends ICacheBundle{
     val blkPaddr: UInt = UInt((vaddrBitsExtended - blockOffBits).W)
@@ -66,17 +71,22 @@ class ICacheMissResp(implicit p: Parameters) extends ICacheBundle{
 
 class MSHRMissResp(implicit p: Parameters) extends ICacheBundle{
   val blkPaddr: UInt = UInt((vaddrBitsExtended - blockOffBits).W)
-
   val vSetIdx:  UInt = UInt((log2Up(nSets)).W)
   val way:  UInt = UInt(log2Ceil(nWays).W)
+}
 
+class MainPipeDataReq(implicit p: Parameters) extends ICacheBundle{
+  val vSetIdx:  UInt = UInt((log2Up(nSets)).W)
+  val way:  UInt = UInt(log2Ceil(nWays).W)
+}
+class MainPipeDataResp(implicit p: Parameters) extends ICacheBundle{
+  val data:     UInt = UInt((cacheBlockBytes*8).W)
 }
 
 class ICacheMetaWriteBundle(implicit p: Parameters) extends ICacheBundle {
     val virIdx      = UInt((log2Up(nSets)).W)
     val phyTag      = UInt((vaddrBitsExtended - blockOffBits).W)
-    v
-    al way     = UInt(log2Ceil(nWays).W)
+    val way        = UInt(log2Ceil(nWays).W)
 }
 class ICacheDataWriteBundle(implicit p: Parameters) extends ICacheBundle{
     val virIdx      = UInt(idxBits.W)

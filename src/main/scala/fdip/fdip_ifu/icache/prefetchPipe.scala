@@ -71,8 +71,8 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
   io.tlbReq.bits.vaddr := Mux(s1_itlbResend, s1_vaddr, s0_vaddr)
   io.tlbReq.bits.passthrough := false.B
   io.tlbReq.bits.size := log2Ceil(coreInstBytes * fetchWidth).U
-  io.tlbReq.bits.cmd := io.ptw.cmd
-  io.tlbReq.bits.v := false.B
+  io.tlbReq.bits.cmd := DontCare
+  io.tlbReq.bits.v := io.ptw.v
   io.tlbReq.bits.prv := io.ptw.prv
 
   // The FDIP ITLB response is combinational for the request in this cycle.

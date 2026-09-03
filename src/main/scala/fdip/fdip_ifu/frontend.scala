@@ -411,34 +411,20 @@ class BoomFrontendModule(outer: FDIPBoomFrontend) extends LazyModuleImp(outer)
   ifu.io.fromICache.ae          := icache.io.resp.bits.ae
   ifu.io.fromICache.replay      := icache.io.resp.bits.replay//TODO：delete it
   icache.io.ifu_s3_ready        := ifu.io.toICache.f3_ready
-  tlb.io.req(0).valid             := ftq.io.toICache.req.valid 
+
+  tlb.io.req(0).valid             := icache.io.prefetch_tlb_req.valid
   tlb.io.req(0).bits.cmd          := DontCare
-  tlb.io.req(0).bits.vaddr        := ftq.io.toICache.req.bits.fetch_pc
+  tlb.io.req(0).bits.vaddr        := icache.io.prefetch_tlb_req.bits.fetch_pc
   tlb.io.req(0).bits.passthrough  := false.B
   tlb.io.req(0).bits.size         := log2Ceil(coreInstBytes * fetchWidth).U
   tlb.io.req(0).bits.v            := io.ptw.status.v
   tlb.io.req(0).bits.prv          := io.ptw.status.prv
 
-  tlb.io.req(1).valid             := ftq.io.toPrefetch.valid
-  tlb.io.req(1).bits.cmd          := DontCare
-  tlb.io.req(1).bits.vaddr        := ftq.io.toPrefetch.bits.fetch_pc
-  tlb.io.req(1).bits.passthrough  := false.B
-  tlb.io.req(1).bits.size         := log2Ceil(coreInstBytes * fetchWidth).U
-  tlb.io.req(1).bits.v            := io.ptw.status.v
-  tlb.io.req(1).bits.prv          := io.ptw.status.prv
+  tlb.io.req(1) := DontCare
     
   tlb.io.sfence                := RegNext(io.cpu.sfence)
   tlb.io.kill                  := false.B
-
-  val tlb_resp                 = RegEnable(tlb.io.resp(0),ftq.io.toICache.req.fire)
-  val tlb_prefetch_resp        = RegEnable(tlb.io.resp(1),ftq.io.toPrefetch.fire)
-  val tlb_prefetch_req_valid   = RegNext(ftq.io.toPrefetch.fire)
-  val tlb_req_valid            = RegNext(ftq.io.toICache.req.fire)
-  icache.io.s1_paddr := tlb_resp.paddr
-  icache.io.s1_prefetch_paddr := tlb_prefetch_resp.paddr
-  icache.io.s1_prefetch_kill  := tlb_prefetch_req_valid&&(tlb_prefetch_resp.miss || tlb_prefetch_resp.ae.inst || tlb_prefetch_resp.pf.inst)
-  icache.io.s1_kill  := tlb_req_valid&&(tlb_resp.miss || tlb_resp.ae.inst || tlb_resp.pf.inst) //kill只需要持续一个周期就可以
-  icache.io.s2_kill  := false.B//目前s0阶段访问icache，s1阶段得到结果，然后如果miss或者pgf ，直接刷掉，RegNext(RegNext(ftq.io.toICache.req.valid)&&(tlb_resp.ae.inst||tlb_resp.pf.inst))//必须有效请求才会出现异常
+  icache.io.prefetch_tlb_resp := tlb.io.resp(0)
   icache.io.flush    := io.cpu.redirect_val || ifu.io.toFtq.redirect_from_fetch
 
   ftq.io.toIfu       <> ifu.io.fromFtq

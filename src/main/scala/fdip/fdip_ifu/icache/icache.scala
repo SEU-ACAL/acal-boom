@@ -76,11 +76,9 @@ class ICacheBundle(val outer: ICache) extends BoomBundle()(outer.p)
   val prefetch_tlb_resp = Input(new TLBResp(log2Ceil(fetchBytes)))
   val prefetch_tlb_v    = Input(Bool())
   val prefetch_tlb_prv  = Input(UInt(PRV.SZ.W))
-  val s1_paddr          = Input(UInt(paddrBits.W)) // delayed one cycle w.r.t. req
-  val s1_prefetch_paddr = Input(UInt(paddrBits.W)) // delayed one cycle w.r.t. req
-  val s1_prefetch_kill  = Input(Bool()) // 此时发生tlb miss，预取失效
-  val s1_kill           = Input(Bool()) // delayed one cycle w.r.t. req
-  val s2_kill           = Input(Bool()) // delayed two cycles; prevents I$ miss emission
+  // val s1_prefetch_kill  = Input(Bool()) // 此时发生tlb miss，预取失效
+  // val s1_kill           = Input(Bool()) // delayed one cycle w.r.t. req
+  // val s2_kill           = Input(Bool()) // delayed two cycles; prevents I$ miss emission
 
   val resp              = Valid(new ICacheResp(outer))
   val ifu_s3_ready      = Input(Bool())
@@ -113,299 +111,165 @@ object GetPropertyByHartId
 
 //现在row bits已经没什么用
 class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
-  with HasBoomFrontendParameters
+  with HasICacheParameters
 {
-  val numBanks = 8//默认64 bytes 8 banks
-  
-  val wordBits = outer.icacheParams.fetchBytes*8
-  val bankBits = (outer.icacheParams.blockBytes/numBanks)*8
-  val bankOffBits = log2Up(numBanks)
-  val enableICacheDelay = tileParams.core.asInstanceOf[BoomCoreParams].enableICacheDelay
-  val fetchBankNum = wordBits/bankBits//每次fetch多少个bank
+
   val io = IO(new ICacheBundle(outer))
-
-  
   val (tl_out, edge_out) = outer.masterNode.out(0)
-  override val refillCycles = outer.icacheParams.blockBytes*8 / tl_out.d.bits.data.getWidth
-  val missunit = Module(new ICacheMissUnit(edge_out,refillCycles)(p))
-  println(f"fecthBankNum:${numBanks}${refillCycles}")
-  require(isPow2(nSets) && isPow2(nWays))
-  require(usingVM)
-  require(pgIdxBits >= untagBits)//TODO: 解除这个限制->refill addr的idx需要用vir 
-  require(refillCycles>=1)
-  require(wordBits >= bankBits)
-  // How many bits do we intend to fetch at most every cycle?
-  
-  // Each of these cases require some special-case handling.
-  // require (tl_out.d.bits.data.getWidth == wordBits || (2*tl_out.d.bits.data.getWidth == wordBits && nBanks == 2))
-  // require (tl_out.d.bits.data.getWidth == wordBits)
-  // require (tl_out.d.bits.data.getWidth == wordBits)
-  // If TL refill is half the wordBits size and we have two banks, then the
-  // refill writes to only one bank per cycle (instead of across two banks every
-  // cycle).
+  override val refillCycles = outer.icacheParams.blockBytes * 8 / tl_out.d.bits.data.getWidth
 
-  //每次fetch的bank起始一定是奇数
-  def fetchData(start_bank:UInt,ICacheData:Vec[UInt]) = {
-    val data = Wire(Vec(fetchBankNum,UInt(bankBits.W)))
-    for(i <- 0 until fetchBankNum){
-      data(i) := ICacheData((start_bank+i.U)%numBanks.U)
-    }
-    Cat(data.reverse)
-  }
-  def bankSel(start_bank:UInt) = {
-    val sel = Wire(UInt(numBanks.W))
-    val end_bank  = start_bank + fetchBankNum.U - 1.U
-    sel := MaskUpper(UIntToOH(start_bank)) & MaskLower(UIntToOH(end_bank))
-    sel
+  val missUnit = Module(new ICacheMissUnit(edge_out, refillCycles))
+  val mainPipe = Module(new MainPipe())
+  val prefetchPipe = Module(new PrefetchPipe())
+  val wayLookup = Module(new WayLookup())
 
-  }
-  val prefetch_pipe    = Module(new PrefetchPipe())
-  val refillsToOneBank = (2*tl_out.d.bits.data.getWidth == wordBits)
-  val missRespVal      = WireInit(missunit.io.fetch_resp.valid)
-  val missResp         = WireInit(missunit.io.fetch_resp.bits)
-
-  val s1_ready,s2_ready       = WireInit(false.B)
-  val s0_fire,s1_fire,s2_fire = WireInit(false.B) 
-  val s0_valid      = io.req.fire
-  val s0_vaddr      = WireInit(io.req.bits.addr)
-  val s0_start_bank = fetchAlign(s0_vaddr)(blockOffBits-1,blockOffBits-bankOffBits)
-  val s0_bank_sel   = bankSel(s0_start_bank)
-
-  val s1_vaddr      = RegEnable(s0_vaddr,s0_fire)
-  val s1_start_bank = RegEnable(s0_start_bank,s0_fire)
-  val s1_valid      = RegInit(false.B)
-  val s1_idx        = io.s1_paddr(untagBits-1,blockOffBits)
-  val s1_tag        = io.s1_paddr(tagBits+untagBits-1,untagBits)
-  val s1_prefetch_idx        = WireInit(io.s1_prefetch_paddr(untagBits-1,blockOffBits))
-  val s1_prefetch_tag        = WireInit(io.s1_prefetch_paddr(tagBits+untagBits-1,untagBits))
-  val s1_tag_hit    = Wire(Vec(nWays, Bool()))
-  val s1_resp_hit   = missRespVal && (missResp.vSetIdx === s1_idx) && s1_valid && (missResp.blkPaddr>>idxBits)===s1_tag
-  val s1_hit        = s1_tag_hit.reduce(_||_) || s1_resp_hit
-  val s1_dout       = Wire(Vec(nWays, Vec(numBanks,UInt(bankBits.W)))) 
-  val s1_hit_way     = OHToUInt(s1_tag_hit)
-  val s1_way_mux     = Mux1H(s1_tag_hit, s1_dout)
-  val s1_data        = fetchData(s1_start_bank,Mux(s1_resp_hit,s1_dout(0),s1_way_mux))//s1 hit的数据来自missunit或者data array
-
-  val s2_vaddr      = RegEnable(s1_vaddr,s1_fire && !io.s1_kill)
-  val s2_idx         = RegEnable(s1_idx,s1_fire && !io.s1_kill)
-  val s2_tag         = RegEnable(s1_tag,s1_fire && !io.s1_kill)
-  val s2_start_bank  = RegEnable(s1_start_bank,s1_fire && !io.s1_kill)
-  val s2_valid       = RegInit(false.B)//RegEnable(s1_valid  ,false.B,s1_fire && !io.s1_kill)
-  val s2_hit         = RegEnable(s1_hit,false.B,s1_fire && !io.s1_kill)
-  val s2_data        = RegEnable(s1_data,s1_fire && !io.s1_kill)
-  val s2_fetch_finish= WireInit(false.B)
-  val s2_has_fetched = RegInit(false.B)
-  //mshr info
-
-  //s1,s2阶段正好命中missunit的resp
-  
-  val s2_resp_hit      = missRespVal && (missResp.vSetIdx === s2_idx) && s2_valid && (missResp.blkPaddr>>idxBits)===s2_tag
-
-
-
-  val s2_respData = Wire(Vec(numBanks,UInt(bankBits.W)))
-  for (i <- 0 until numBanks){
-    s2_respData(i) := missResp.data((i+1)*bankBits-1,i*bankBits)
-  }
-  val s2_resp_data  = fetchData(s2_start_bank,s2_respData)
-  val ifu_resp_data = Mux(s2_resp_hit, s2_resp_data, s2_data)
-  val newRespValid  = s2_valid && (s2_hit || s2_resp_hit)
-  // IFU s3 ready信号到来之前，保存 response，防止 miss response 的一拍脉冲或数据被覆盖。
-  val ifu_resp_data_reg   = RegInit(0.U((outer.icacheParams.fetchBytes*8).W))
-  val ifu_resp_data_valid = RegInit(false.B)
-  when (io.flush || io.s2_kill) {
-    ifu_resp_data_valid := false.B
-  }.elsewhen (newRespValid && !io.ifu_s3_ready) {
-    ifu_resp_data_reg   := ifu_resp_data
-    ifu_resp_data_valid := true.B
-  }.elsewhen (s2_fire) {
-    ifu_resp_data_valid := false.B
-  }
-  when(io.s1_kill||io.flush){
-    s1_valid := false.B
-  }.elsewhen(s0_fire){
-    s1_valid := true.B
-  }.elsewhen(s1_fire){
-    s1_valid := false.B
-  }
-
-  when(io.s2_kill||io.flush){
-    s2_valid := false.B
-  }.elsewhen(s1_fire && !io.s1_kill){
-    s2_valid := true.B
-  }.elsewhen(s2_fire){
-    s2_valid := false.B
-  }
-  s0_fire           := s0_valid && s1_ready 
-  s1_fire           := s1_valid && s2_ready
-  s1_ready          := s1_fire || !s1_valid
-  s2_ready          := s2_fire || !s2_valid
-  s2_fire           := s2_valid && (s2_hit || s2_resp_hit || ifu_resp_data_valid) && io.ifu_s3_ready
-  
-  
-  dontTouch(missResp)
-  dontTouch(missRespVal)
-  dontTouch(s1_idx)
-  dontTouch(s0_bank_sel)
-  dontTouch(s1_tag)
-  dontTouch(s1_data)
-  dontTouch(s0_vaddr)
-  dontTouch(s1_vaddr)
-  dontTouch(s2_vaddr)
-  dontTouch(s2_fire)
-  dontTouch(s0_fire)
-  dontTouch(s1_fire)
-  dontTouch(s1_ready)
-  dontTouch(s1_prefetch_idx)
-  dontTouch(s1_prefetch_tag)
-  val invalidated = RegInit(false.B)
-  dontTouch(invalidated)
-  val s2_miss = s2_valid && !s2_hit && !s2_resp_hit 
-
-
-  io.req.ready := !missunit.io.fetch_resp.valid && s1_ready
-
-  val (_, _, d_done, refill_cnt) = edge_out.count(tl_out.d)
-  // val refill_done = refill_one_beat && d_done
-  // tl_out.d.ready := true.B
-  require (edge_out.manager.minLatency > 0)
-
-  val repl_way = if (isDM) 0.U else LFSR(16, s2_miss)(log2Ceil(nWays)-1,0)
-  //现在采用复制的方法去保证正常取指和prefetch同时可以访问
-  val tag_array = Seq.fill(2){SyncReadMem(nSets, Vec(nWays, UInt(tagBits.W)))}
-  val tag_rdata = tag_array(0).read(s0_vaddr(untagBits-1, blockOffBits), !missRespVal && s0_valid)//for normal fetch
-  when (missRespVal) {
-    for(i <- 0 until 2){
-      when (!invalidated && !io.invalidate) {
-        tag_array(i).write(missResp.vSetIdx, VecInit(Seq.fill(nWays)(missResp.blkPaddr>>idxBits)), Seq.tabulate(nWays)(missResp.way === _.U))
-      }
+  // The metadata array is single-ported.  Refill writes have highest
+  // priority; normal and prefetch lookups share the remaining read port.
+  val tagArray = SyncReadMem(nSets, Vec(nWays, UInt(tagBits.W)))
+  val dataArrays = (0 until nWays).map { way =>
+    (0 until numBanks).map { bank =>
+      Module(new ICacheSRAMHelper(
+        "ICache Data Array", way, bank, nSets,
+        UInt((cacheBlockBytes * 8 / numBanks).W)))
     }
   }
+  val validBits = RegInit(0.U((nSets * nWays).W))
 
-  val vb_array = RegInit(0.U((nSets*nWays).W))
-  val refillStartMask = missunit.io.refill_start.map { start =>
-    Mux(start.valid,
-      UIntToOH(Cat(start.bits.way, start.bits.vSetIdx), nSets * nWays),
-      0.U((nSets * nWays).W))
+  val missResp = missUnit.io.fetch_resp
+  val refillStartMask = missUnit.io.refill_start.map { start =>
+    Mux(start.valid, UIntToOH(Cat(start.bits.way, start.bits.vSetIdx), nSets * nWays), 0.U((nSets * nWays).W))
   }.reduce(_ | _)
-  val refillDoneMask = Mux(missRespVal && !invalidated && !io.invalidate,
-    UIntToOH(Cat(missResp.way, missResp.vSetIdx), nSets * nWays),
+  val refillDoneMask = Mux(missResp.valid && !io.invalidate,
+    UIntToOH(Cat(missResp.bits.way, missResp.bits.vSetIdx), nSets * nWays),
     0.U((nSets * nWays).W))
-  // Invalidate a victim as soon as its refill is allocated. This prevents
-  // hits on the old line while the replacement transaction is in flight.
+
   when (io.invalidate) {
-    vb_array := 0.U
+    validBits := 0.U
   }.elsewhen (refillStartMask.orR || refillDoneMask.orR) {
-    // A same-cycle refill start wins over a completion for the same entry.
-    vb_array := (vb_array & ~refillStartMask) | (refillDoneMask & ~refillStartMask)
+    validBits := (validBits & ~refillStartMask) | (refillDoneMask & ~refillStartMask)
+  }
+  // A refill owns the metadata port for the whole refill transaction and for
+  // the response/write cycle.  This prevents a read/write collision on the
+  // single-ported tag array.
+  val metaRefillBusy = missUnit.io.refill_busy || missResp.valid
+  // Keep ready asserted even when the prefetch request is not yet valid;
+  // PrefetchPipe uses this signal to accept its S0 transaction.  Refill owns
+  // the port whenever it is active.
+  prefetchPipe.io.metaRead.req.ready := !metaRefillBusy && !io.flush && !io.invalidate
+  val prefetchMetaIdx = RegEnable(
+    prefetchPipe.io.metaRead.req.bits.vSetIdx,
+    prefetchPipe.io.metaRead.req.fire)
+
+  val prefetchMetaReadFire = prefetchPipe.io.metaRead.req.fire
+  val metaRead = tagArray.read(
+    prefetchPipe.io.metaRead.req.bits.vSetIdx, prefetchMetaReadFire)
+  when (missResp.valid && !io.invalidate) {
+    tagArray.write(missResp.bits.vSetIdx,
+      VecInit(Seq.fill(nWays)(missResp.bits.blkPaddr >> idxBits)),
+      Seq.tabulate(nWays)(missResp.bits.way === _.U))
   }
 
-  // Keep the invalidate guard until every fetch and prefetch refill drains.
-  when (io.invalidate) {
-    invalidated := true.B
-  }.elsewhen (!missunit.io.refill_busy) {
-    invalidated := false.B
+  val prefetchTagReadValid = RegNext(prefetchMetaReadFire, false.B)
+  for (way <- 0 until nWays) {
+    prefetchPipe.io.metaRead.resp(way).valid := prefetchTagReadValid &&
+      validBits(Cat(way.U, prefetchMetaIdx))
+    prefetchPipe.io.metaRead.resp(way).bits.pTag := metaRead(way)
   }
+  // WayLookup entries are produced only by the prefetch pipeline.  Refill
+  // responses update existing entries through the dedicated update port.
+  prefetchPipe.io.wayLookupWrite <> wayLookup.io.write
 
-  // val s2_dout   = Wire(Vec(nWays, Vec(numBanks,UInt(bankBits.W))))
-  // val s1_bankid = Wire(Bool())
-
-  for (i <- 0 until nWays) {
-
-    val s1_vb = vb_array(Cat(i.U, s1_idx))
-    val tag = tag_rdata(i)
-    s1_tag_hit(i) := s1_vb && tag === s1_tag
-  }
-  assert(PopCount(s1_tag_hit) <= 1.U)
-  val ramDepth = nSets
-
-  val dataArrays =     (0 until nWays).map { way =>
-    val banks = (0 until numBanks).map { bank =>
-      val singleBank = Module(new ICacheSRAMHelper("ICache Data Array",way, bank, ramDepth, UInt((outer.icacheParams.blockBytes*8/numBanks).W)))
-      singleBank
-    }
-    banks
-  }
-  
-  for (i <- 0 until nWays) {
-    val s0_ren = s0_valid
-    val wen = (missRespVal && !invalidated && !io.invalidate) && missResp.way === i.U
-
+  for (way <- 0 until nWays) {
     for (bank <- 0 until numBanks) {
-      val dataArray = dataArrays(i)(bank)
-      var mem_idx: UInt = null
-
-      mem_idx =
-        Mux(missRespVal, missResp.vSetIdx ,
-        s0_vaddr(untagBits-1, blockOffBits))
-      // val data = tl_out.d.bits.data
-      dataArray.io.w.wen   := wen  
-      dataArray.io.w.waddr := mem_idx
-      dataArray.io.w.wdata := missResp.data(bankBits*(bank+1)-1,bankBits*bank)
-
-      dataArray.io.r.req.valid      := s0_valid && s0_bank_sel(bank)
-      dataArray.io.r.req.bits.raddr := mem_idx
-
-      // if (enableICacheDelay)
-      //   s2_dout(i)(bank) := RegNext(dataArray.io.r.resp.rdata)
-      // else
-      //   s2_dout(i)(bank) := dataArray.io.r.resp.rdata
-      s1_dout(i)(bank) := Mux(s1_resp_hit,missResp.data(bankBits*(bank+1)-1,bankBits*bank),dataArray.io.r.resp.rdata)
+      val array = dataArrays(way)(bank)
+      array.io.w.wen := missResp.valid && !io.invalidate && missResp.bits.way === way.U
+      array.io.w.waddr := missResp.bits.vSetIdx
+      array.io.w.wdata := missResp.bits.data((bank + 1) * bankBits - 1, bank * bankBits)
+      array.io.r.req.valid := mainPipe.io.mainPipeDataReq.valid &&
+        mainPipe.io.mainPipeDataReq.bits.way === way.U
+      array.io.r.req.bits.raddr := mainPipe.io.mainPipeDataReq.bits.vSetIdx
     }
   }
-  
-  when(io.flush||io.invalidate){
-    s2_has_fetched := false.B
-  }.elsewhen(s2_fire){
-    s2_has_fetched := false.B
+  val dataReadFire = mainPipe.io.mainPipeDataReq.fire
+  //read en
+  mainPipe.io.mainPipeDataReq.ready := dataArrays.map(_.map(_.io.r.req.ready).reduce(_ && _)).reduce(_ && _)
+  val mainData = Wire(Vec(numBanks, UInt(bankBits.W)))
+  for (bank <- 0 until numBanks) {
+    mainData(bank) := Mux1H((0 until nWays).map(way =>
+      (mainPipe.io.mainPipeDataReq.bits.way === way.U) -> dataArrays(way)(bank).io.r.resp.rdata))
   }
-  .elsewhen(missunit.io.fetch_req.fire){
-    s2_has_fetched := true.B
+  mainPipe.io.mainPipeDataResp.valid := RegNext(dataReadFire, false.B)
+  mainPipe.io.mainPipeDataResp.bits.data := Cat(mainData.reverse)
+
+  prefetchPipe.io.fromFtq.valid := io.prefetch_req.valid
+  prefetchPipe.io.fromFtq.bits := io.prefetch_req.bits
+  io.prefetch_req.ready := prefetchPipe.io.fromFtq.ready
+  prefetchPipe.io.flush := io.flush || io.invalidate
+
+  io.prefetch_tlb_req.valid := prefetchPipe.io.tlbReq.valid
+  io.prefetch_tlb_req.bits := prefetchPipe.io.tlbReq.bits
+  prefetchPipe.io.tlbReq.ready := io.prefetch_tlb_req.ready
+  prefetchPipe.io.tlbResp := io.prefetch_tlb_resp
+  prefetchPipe.io.ptw.prv := io.prefetch_tlb_prv
+  prefetchPipe.io.ptw.v := io.prefetch_tlb_v
+  prefetchPipe.io.s1_kill := DontCare
+  prefetchPipe.io.missResp.valid := missResp.valid
+  prefetchPipe.io.missResp.bits := missResp.bits
+
+
+  wayLookup.io.flush := io.flush || io.invalidate
+  wayLookup.io.update.valid := missResp.valid
+  wayLookup.io.update.bits := missResp.bits
+  wayLookup.io.mainPipeToWayLookup := mainPipe.io.wayLookupToMainPipe.fire
+  mainPipe.io.wayLookupToMainPipe <> wayLookup.io.wayLookupToMainPipe
+
+  mainPipe.io.fromFtq.valid := io.req.valid && !io.flush && !metaRefillBusy
+  mainPipe.io.fromFtq.bits.fetch_pc := io.req.bits.addr
+  mainPipe.io.fromFtq.bits.ftqIdx := 0.U
+  io.req.ready := mainPipe.io.fromFtq.ready && !io.flush && !io.invalidate &&
+    !metaRefillBusy
+  mainPipe.io.flush := io.flush || io.invalidate
+  mainPipe.io.toIFU.ready := io.ifu_s3_ready
+
+  missUnit.io.fetch_req <> mainPipe.io.mainPipeMissReq
+  mainPipe.io.mainPipeMissResp.valid := missResp.valid
+  mainPipe.io.mainPipeMissResp.bits := missResp.bits
+  missUnit.io.fencei := io.invalidate
+  missUnit.io.flush := io.flush || io.invalidate
+  missUnit.io.prefetch_req.valid := prefetchPipe.io.missReq.valid
+  missUnit.io.prefetch_req.bits := prefetchPipe.io.missReq.bits
+  prefetchPipe.io.missReq.ready := missUnit.io.prefetch_req.ready
+
+  val mainStartBank = RegEnable(
+    fetchAlign(io.req.bits.addr)(blockOffBits - 1, blockOffBits - bankOffBits),
+    io.req.fire)
+  val mainBlockData = mainPipe.io.toIFU.bits.data.asTypeOf(Vec(numBanks, UInt(bankBits.W)))
+  val mainFetchData = Wire(Vec(fetchBankNum, UInt(bankBits.W)))
+  for (i <- 0 until fetchBankNum) {
+    mainFetchData(i) := mainBlockData(i)
   }
-  missunit.io.fetch_req.valid := s2_miss && !io.s2_kill && s2_valid && !s2_has_fetched && !io.flush && !io.invalidate
-  missunit.io.fetch_req.bits.blkPaddr := Cat(s2_tag, s2_idx)
-  missunit.io.fetch_req.bits.vSetIdx  := s2_idx
-  missunit.io.fetch_req.bits.way      := repl_way
-  missunit.io.fencei                  := io.invalidate
-  missunit.io.flush                   := io.flush||io.invalidate//TODO: add prefetch and flush
-
-  missunit.io.prefetch_req            := DontCare
-  prefetch_pipe.io.s1_kill := io.s1_prefetch_kill
-  prefetch_pipe.io.refilled := missRespVal
-  prefetch_pipe.io.req <>io.prefetch_req
-  prefetch_pipe.io.flush := io.flush||io.invalidate
-  prefetch_pipe.io.s1_paddr := io.s1_prefetch_paddr
-  missunit.io.prefetch_req <> prefetch_pipe.io.prefetch_req
-  prefetch_pipe.io.s1_tag_hit := s1_prefetch_hit.reduce(_||_) || missRespVal&&(missResp.vSetIdx===s1_prefetch_idx)&&(missResp.blkPaddr>>idxBits)===s1_prefetch_tag
-
-  // val refill_resp_dat = RegNext(fetchData())
-  io.resp.bits.ae     := DontCare
-  io.resp.bits.replay := DontCare
-  io.resp.bits.data   := Mux(ifu_resp_data_valid, ifu_resp_data_reg, ifu_resp_data)
-  io.resp.valid       := (newRespValid || ifu_resp_data_valid) && !io.s2_kill && !io.flush
-
-  tl_out.a <> missunit.io.acquire
-  missunit.io.grant <> tl_out.d
-
+  io.resp.valid := mainPipe.io.toIFU.valid && !io.flush
+  io.resp.bits.data := Cat(mainFetchData.reverse)
+  io.resp.bits.replay := false.B
+  io.resp.bits.ae := false.B
+  tl_out.a <> missUnit.io.acquire
+  missUnit.io.grant <> tl_out.d
   tl_out.b.ready := true.B
   tl_out.c.valid := false.B
   tl_out.e.valid := false.B
-
-  io.perf.miss_acquire := tl_out.a.fire && tl_out.a.bits.source<4.U
-  io.perf.prefetch_acquire := tl_out.a.fire && tl_out.a.bits.source>=4.U
-
-
+  io.perf.miss_acquire := tl_out.a.fire && tl_out.a.bits.source < 4.U
+  io.perf.prefetch_acquire := tl_out.a.fire && tl_out.a.bits.source >= 4.U
 
   override def toString: String = BoomCoreStringPrefix(
     "==L1-ICache==",
     "Fetch bytes   : " + cacheParams.fetchBytes,
     "Block bytes   : " + (1 << blockOffBits),
     "Row bytes     : " + rowBytes,
-    "Word bits     : " + wordBits,
+    "Word bits     : " + (outer.icacheParams.fetchBytes * 8),
     "Sets          : " + nSets,
     "Ways          : " + nWays,
     "Refill cycles : " + refillCycles,
-    "RAMs          : (" +  wordBits/nBanks + " x " + nSets*refillCycles + ") using " + nBanks + " banks",
+    "RAMs          : (" + (outer.icacheParams.fetchBytes * 8 / nBanks) + " x " + nSets*refillCycles + ") using " + nBanks + " banks",
     "" + (if (nBanks == 2) "Dual-banked" else "Single-banked"),
     "I-TLB ways    : " + cacheParams.nTLBWays + "\n")
 }

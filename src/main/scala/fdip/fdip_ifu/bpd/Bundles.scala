@@ -221,3 +221,14 @@ class BranchPredictorResponse(implicit p: Parameters) extends BoomBundle()(p)
   val f2 = Vec(predWidth, new Prediction)
   val f3 = Vec(predWidth, new Prediction)
 }
+
+
+class RasUpdateInfo(implicit p: Parameters) extends BoomBundle()(p)
+  with HasBoomFrontendParameters
+{
+  val attribute = new BranchAttribute
+  val startPc = UInt(vaddrBitsExtended.W)
+  val cfiPosition = UInt(log2Ceil(fetchBytes).W)
+  val rasState = new RasState
+
+}

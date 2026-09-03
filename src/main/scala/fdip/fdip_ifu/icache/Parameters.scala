@@ -24,4 +24,7 @@ trait HasICacheParameters extends HasBoomFrontendParameters with HasBoomCorePara
   def blockBytes: Int = icacheParams.blockBytes
   def fetchBytes: Int = icacheParams.fetchBytes
   def WayLookupEntrySz: Int = 16
+  def numBanks: Int = 8
+  def bankBits = (blockBytes/numBanks)*8
+  val bankOffBits = log2Up(numBanks)
 }
