@@ -606,7 +606,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   io.toBPU.ras_updateInfo.valid                                        := bpd_update_mispredict && (ras_update_info.attribute.isCall || ras_update_info.attribute.isReturn)
   io.toBPU.ras_updateInfo.bits.rasState                                := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).rasState)
   io.toBPU.ras_updateInfo.bits.attribute                               := (ras_update_info.attribute)
-  io.toBPU.ras_updateInfo.bits.cfiPosition                             := (ras_update_info.cfiPosition)
+  io.toBPU.ras_updateInfo.bits.cfiPosition                             := ras_update_info.cfiPosition.bits
   io.toBPU.ras_updateInfo.bits.startPc                                  := (bpd_update_pc)
 
 

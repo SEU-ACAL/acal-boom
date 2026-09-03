@@ -412,19 +412,22 @@ class BoomFrontendModule(outer: FDIPBoomFrontend) extends LazyModuleImp(outer)
   ifu.io.fromICache.replay      := icache.io.resp.bits.replay//TODO：delete it
   icache.io.ifu_s3_ready        := ifu.io.toICache.f3_ready
 
-  tlb.io.req(0).valid             := icache.io.prefetch_tlb_req.valid
+  tlb.io.req(0).valid             := ftq.io.toICache.req.valid
   tlb.io.req(0).bits.cmd          := DontCare
-  tlb.io.req(0).bits.vaddr        := icache.io.prefetch_tlb_req.bits.fetch_pc
+  tlb.io.req(0).bits.vaddr        := ftq.io.toICache.req.bits.fetch_pc
   tlb.io.req(0).bits.passthrough  := false.B
   tlb.io.req(0).bits.size         := log2Ceil(coreInstBytes * fetchWidth).U
   tlb.io.req(0).bits.v            := io.ptw.status.v
   tlb.io.req(0).bits.prv          := io.ptw.status.prv
 
-  tlb.io.req(1) := DontCare
+  tlb.io.req(1) <> icache.io.prefetch_tlb_req
     
   tlb.io.sfence                := RegNext(io.cpu.sfence)
   tlb.io.kill                  := false.B
-  icache.io.prefetch_tlb_resp := tlb.io.resp(0)
+  icache.io.prefetch_tlb_resp := tlb.io.resp(1)
+  icache.io.prefetch_tlb_v := io.ptw.status.v
+  icache.io.prefetch_tlb_prv := io.ptw.status.prv
+  val tlb_resp = RegEnable(tlb.io.resp(0), ftq.io.toICache.req.fire)
   icache.io.flush    := io.cpu.redirect_val || ifu.io.toFtq.redirect_from_fetch
 
   ftq.io.toIfu       <> ifu.io.fromFtq
@@ -441,8 +444,8 @@ class BoomFrontendModule(outer: FDIPBoomFrontend) extends LazyModuleImp(outer)
 
   bpu.io.reset_vector := io_reset_vector
   bpu.io.f3_fire      := DontCare
-  ifu.io.fromTLB.xcpt_pf_if := tlb_resp.ae.inst 
-  ifu.io.fromTLB.xcpt_ae_if := tlb_resp.pf.inst
+  ifu.io.fromTLB.xcpt_pf_if := tlb_resp.pf.inst
+  ifu.io.fromTLB.xcpt_ae_if := tlb_resp.ae.inst
 
   fb.io.enq <> ifu.io.toIbuf.req
   fb.io.clear := io.cpu.redirect_flush || io.cpu.redirect_val//TODO check it

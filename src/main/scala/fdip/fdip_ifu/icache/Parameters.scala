@@ -15,14 +15,10 @@ case class BoomFAMicroBTBParams(
 )
 
 trait HasICacheParameters extends HasBoomFrontendParameters with HasBoomCoreParameters {
-  def icacheParams: ICacheParams = ICacheParams
-  def nSets: Int = icacheParams.nSets
-  def tagBits: Int = icacheParams.blockBytes*8
+  def blockBytes: Int = cacheParams.blockBytes
   def nSetsBits: Int = log2Ceil(nSets)
   def nWaysBits: Int = log2Ceil(nWays)
-  def nWays: Int = icacheParams.nWays
-  def blockBytes: Int = icacheParams.blockBytes
-  def fetchBytes: Int = icacheParams.fetchBytes
+  def fetchBankNum: Int = fetchBytes / (blockBytes / numBanks)
   def WayLookupEntrySz: Int = 16
   def numBanks: Int = 8
   def bankBits = (blockBytes/numBanks)*8

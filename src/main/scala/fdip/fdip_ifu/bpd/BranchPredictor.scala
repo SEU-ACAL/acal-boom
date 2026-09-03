@@ -226,7 +226,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   val redirect_ras_repair = io.fromFtq.ras_updateInfo.valid
   val redirect_rasState = io.fromFtq.ras_updateInfo.bits.rasState
   val redirect_ras_attribute = io.fromFtq.ras_updateInfo.bits.attribute
-  val reidrect_ras_cfiPosition = io.fromFtq.ras_updateInfo.bits.cfiPosition
+  val redirect_ras_cfiPosition = io.fromFtq.ras_updateInfo.bits.cfiPosition
   val redirect_ras_startPc = io.fromFtq.ras_updateInfo.bits.startPc
   val redirect_ras_newState = WireInit(redirect_rasState)
   redirect_ras_newState.idx := Mux(redirect_ras_attribute.isCall,WrapInc(redirect_rasState.idx, nRasEntries),WrapDec(redirect_rasState.idx, nRasEntries))
@@ -271,7 +271,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   s0_rasState           := MuxCase((0.U).asTypeOf(new RasState),
   Seq(
     (RegNext(reset.asBool) && !reset.asBool) -> (0.U).asTypeOf(new RasState),
-    io.fromFtq.ras_update                  -> redirect_ras_newState,
+    io.fromFtq.ras_updateInfo.valid        -> redirect_ras_newState,
     (s2_isCallOrRet)       -> s2_predRasState
   )) 
   //redirect and clear

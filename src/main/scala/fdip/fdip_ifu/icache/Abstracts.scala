@@ -1,4 +1,4 @@
-package boom.fdip.ifu.bpd
+package boom.fdip.ifu
 
 import org.chipsalliance.cde.config.Parameters
 

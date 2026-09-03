@@ -2,6 +2,7 @@ package boom.fdip.ifu
 
 import chisel3._
 import chisel3.util._
+import chisel3.util.random._
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.{TLBReq, TLBResp}
 import boom.fdip.common._
@@ -13,8 +14,7 @@ import boom.fdip.util._
  * Meta replays select the saved S1 address through request-side muxes.
  */
 class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
-  with HasBoomCoreParameters
-  with HasBoomFrontendParameters {
+  with HasICacheParameters {
 
   val io = IO(new Bundle {
     val fromFtq = Flipped(DecoupledIO(new FTQToPrefetchIO))
@@ -98,7 +98,7 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
     resp.valid && (resp.bits.pTag === s1_metaPTag)
   }
   // Source 2: metadata returned directly by the SRAM in this lookup.
-  private val s1_sramWaymask = Mux(s1_metaHitVec.reduce(_ || _), s1_metaHitVec.asUInt, 0.U)
+  private val s1_sramWaymask = Mux(s1_metaHitVec.reduce(_ || _), VecInit(s1_metaHitVec).asUInt, 0.U)
   // Source 3: metadata retained while S1 waits for a replay or downstream
   // backpressure. The SRAM response is only a one-cycle pulse.
   private val s1_metaBaseWaymask = Mux(
@@ -217,7 +217,7 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
   io.missReq.valid := s2_miss && !io.flush
   io.missReq.bits.blkPaddr := Cat(s2_tag, s2_idx)
   io.missReq.bits.vSetIdx := s2_idx
-  io.missReq.bits.way := if (isDM) 0.U else LFSR(16, s2_miss)(log2Ceil(nWays) - 1, 0)
+  io.missReq.bits.way := (if (isDM) 0.U else LFSR(16, s2_miss)(log2Ceil(nWays) - 1, 0))
 
   s2_fire  := s2_valid && (s2_hit || io.missReq.fire)
   s2_ready := !s2_valid || s2_fire

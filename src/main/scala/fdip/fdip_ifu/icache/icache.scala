@@ -21,7 +21,7 @@ import freechips.rocketchip.tile._
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.util._
 import freechips.rocketchip.util.property._
-import freechips.rocketchip.rocket.{HasL1ICacheParameters, ICacheParams, ICacheErrors, ICacheReq, TLBReq, TLBResp}
+import freechips.rocketchip.rocket.{HasL1ICacheParameters, ICacheParams, ICacheErrors, ICacheReq, PRV, TLBReq, TLBResp}
 import boom.fdip.ifu._
 
 
@@ -42,7 +42,7 @@ class ICache(
   val staticIdForMetadataUseOnly: Int)(implicit p: Parameters)
   extends LazyModule
 {
-  lazy val module = new ICacheModule(this)
+  lazy val module = new ICacheLazyModule(this)
   val masterNode = TLClientNode(Seq(TLMasterPortParameters.v1(Seq(TLMasterParameters.v1(
     sourceId = IdRange(0, 12), // 12 个mshr 4fetch 8 prefetch//prefetch代表预取深度
     name = s"Core ${staticIdForMetadataUseOnly} ICache")))))
@@ -67,7 +67,7 @@ class ICacheResp(val outer: ICache) extends Bundle
  *
  * @param outer top level ICache class
  */
-class ICacheBundle(val outer: ICache) extends BoomBundle()(outer.p)
+class ICacheIOBundle(val outer: ICache) extends BoomBundle()(outer.p)
   with HasBoomFrontendParameters
 {
   val req               = Flipped(Decoupled(new ICacheReq))
@@ -110,11 +110,11 @@ object GetPropertyByHartId
  */
 
 //现在row bits已经没什么用
-class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
+class ICacheLazyModule(outer: ICache) extends LazyModuleImp(outer)
   with HasICacheParameters
 {
 
-  val io = IO(new ICacheBundle(outer))
+  val io = IO(new ICacheIOBundle(outer))
   val (tl_out, edge_out) = outer.masterNode.out(0)
   override val refillCycles = outer.icacheParams.blockBytes * 8 / tl_out.d.bits.data.getWidth
 
@@ -212,7 +212,6 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   prefetchPipe.io.tlbResp := io.prefetch_tlb_resp
   prefetchPipe.io.ptw.prv := io.prefetch_tlb_prv
   prefetchPipe.io.ptw.v := io.prefetch_tlb_v
-  prefetchPipe.io.s1_kill := DontCare
   prefetchPipe.io.missResp.valid := missResp.valid
   prefetchPipe.io.missResp.bits := missResp.bits
 

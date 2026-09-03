@@ -46,6 +46,8 @@ class WayLookup(implicit p: Parameters) extends ICacheModule{
 
     io.write.ready := !full && !io.flush
     io.wayLookupToMainPipe.valid := !empty && !updateStall(readPtrValue) && !io.flush
+    io.wayLookupToMainPipe.bits.entry := entry(readPtrValue)
+
 
     when(io.flush){
         writePtr := 0.U

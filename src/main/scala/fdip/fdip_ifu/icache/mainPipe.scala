@@ -66,6 +66,8 @@ class MainPipe(implicit p: Parameters) extends ICacheModule{
     val s1_dataResp = WireInit(io.mainPipeDataResp.bits)
     val s1_waitMissResp = RegInit(false.B)
     val s1_missResp = WireInit(io.mainPipeMissResp.bits)
+    val s1_missDataResp = Wire(new MainPipeDataResp)
+    s1_missDataResp.data := s1_missResp.data
     val s1_missRespValid = WireInit(io.mainPipeMissResp.valid)
     val s1_missRespHit = s1_missRespValid && s1_missResp.blkPaddr >> blockOffBits.U === s1_pTag && s1_missResp.vSetIdx === s1_vSetIdx
     
@@ -78,7 +80,11 @@ class MainPipe(implicit p: Parameters) extends ICacheModule{
     }
 
     val s1_finalHit = Mux(s1_missRespHit||s1_sramValid,s1_missRespHit || s1_hit,RegEnable(s1_missRespHit || s1_hit, s1_missRespHit||s1_sramValid))
-    val s1_finalData = Mux(s1_missRespHit,s1_missResp,Mux(s1_sramValid,s1_dataResp,RegEnable(s1_missRespHit || s1_sramValid,Mux(s1_missRespHit,s1_missResp,s1_dataResp))))
+    val s1_dataHold = RegEnable(
+        Mux(s1_missRespHit, s1_missDataResp, s1_dataResp),
+        s1_missRespHit || s1_sramValid)
+    val s1_finalData = Mux(s1_missRespHit, s1_missDataResp,
+        Mux(s1_sramValid, s1_dataResp, s1_dataHold))
 
     val s1_fetchFinish = !s1_waitMissResp || s1_missRespHit
     // 取指令完成或者!s1_valid
@@ -95,4 +101,5 @@ class MainPipe(implicit p: Parameters) extends ICacheModule{
     io.toIFU.valid := s1_valid && s1_fetchFinish && s1_finalHit
     io.toIFU.bits := s1_finalData
 
+    s1_fire := s1_valid && s1_fetchFinish && io.toIFU.ready
 }
