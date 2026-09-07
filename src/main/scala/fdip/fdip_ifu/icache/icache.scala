@@ -196,7 +196,7 @@ class ICacheLazyModule(outer: ICache) extends LazyModuleImp(outer)
   val mainData = Wire(Vec(numBanks, UInt(bankBits.W)))
   for (bank <- 0 until numBanks) {
     mainData(bank) := Mux1H((0 until nWays).map(way =>
-      (mainPipe.io.mainPipeDataReq.bits.way === way.U) -> dataArrays(way)(bank).io.r.resp.rdata))
+      (RegNext(mainPipe.io.mainPipeDataReq.bits.way) === way.U) -> dataArrays(way)(bank).io.r.resp.rdata))
   }
   mainPipe.io.mainPipeDataResp.valid := RegNext(dataReadFire, false.B)
   mainPipe.io.mainPipeDataResp.bits.data := Cat(mainData.reverse)
@@ -239,13 +239,13 @@ class ICacheLazyModule(outer: ICache) extends LazyModuleImp(outer)
   missUnit.io.prefetch_req.bits := prefetchPipe.io.missReq.bits
   prefetchPipe.io.missReq.ready := missUnit.io.prefetch_req.ready
 
-  val mainStartBank = RegEnable(
-    fetchAlign(io.req.bits.addr)(blockOffBits - 1, blockOffBits - bankOffBits),
-    io.req.fire)
+  //TODO: fix this startbank
+
   val mainBlockData = mainPipe.io.toIFU.bits.data.asTypeOf(Vec(numBanks, UInt(bankBits.W)))
+  val mainStartBank = mainPipe.io.toIFU.bits.startBank
   val mainFetchData = Wire(Vec(fetchBankNum, UInt(bankBits.W)))
   for (i <- 0 until fetchBankNum) {
-    mainFetchData(i) := mainBlockData(i)
+    mainFetchData(i) := mainBlockData((mainStartBank + i.U) % numBanks.U)
   }
   io.resp.valid := mainPipe.io.toIFU.valid && !io.flush
   io.resp.bits.data := Cat(mainFetchData.reverse)

@@ -213,7 +213,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   with HasBoomFrontendParameters
 {
   // override val ftqSz: Int = boomParams.FDIPftq.nEntries
-  assert(isPow2(ftqSz) && ftqSz >= 2)//now it onlty support pow2,
+  require(ftqSz >= 2, "FDIP FTQ requires at least two entries")
   val num_entries = ftqSz
   private val ftqIdxBits = log2Ceil(num_entries)
   private val ftqPtrBits = ftqIdxBits + 1

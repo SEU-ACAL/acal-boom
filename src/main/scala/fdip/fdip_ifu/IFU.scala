@@ -148,26 +148,26 @@ class BoomIFU(implicit p: Parameters) extends BoomModule()(p)
   val f1_req          = RegEnable(f0_req,f0_fire && (!f1_flush))
   val f1_tlb_pf_if    = io.fromTLB.xcpt_pf_if
   val f1_tlb_ae_if    = io.fromTLB.xcpt_ae_if
+  val f1_icache_resp  = io.fromICache.data
+  val f1_icache_resp_val = io.fromICache.data_valid
   f1_flush_by_bpu := f1_valid && (io.fromFtq.flushByBpu.flushByS2(f1_req.ftq_idx)|| io.fromFtq.flushByBpu.flushByS3(f1_req.ftq_idx))
   f1_ready            := (!f1_valid)||f1_fire
-  f1_fire             := f1_valid && f2_ready && !f1_flush
+  f1_fire             := f1_valid && f2_ready && f1_icache_resp_val && !f1_flush
 /* -------------------------------------------------------------------------- */
-/*                        F2(ICache Resp and predeocde)                       */
+/*                        F2(predeocde)                       */
 /* -------------------------------------------------------------------------- */
-/* 
-TODO:s2阶段如果阻塞（fb 满）并且icache hit，此时会出现问题，需要保持s2阶段的icache data，
- */
+
   val f2_valid            = RegInit(false.B)//RegEnable(f1_valid, false.B,f1_fire && !f1_flush)
   val f2_req              = RegEnable(f1_req,f1_fire && !f1_flush)
   val f2_tlb_pf_if        = RegEnable(f1_tlb_pf_if, false.B,f1_fire && !f1_flush)
   val f2_tlb_ae_if        = RegEnable(f1_tlb_ae_if, false.B,f1_fire && !f1_flush)
-  val f2_icache_resp      = io.fromICache.data
-  val f2_icache_resp_val  = io.fromICache.data_valid
+  val f2_icache_resp      = RegEnable(io.fromICache.data, 0.U, f1_fire && !f1_flush)
+  val f2_icache_resp_val  = RegEnable(io.fromICache.data_valid, false.B, f1_fire && !f1_flush)
 
   val predecoder          = Module(new PreDecode)
   val prechecker          = Module(new PreChecker)
   f2_ready                := (!f2_valid) || f2_fire 
-  f2_fire                 := f2_valid && f3_ready && f2_icache_resp_val && !f2_flush //icache 数据返回此时才可以进入下一级
+  f2_fire                 := f2_valid && f3_ready && !f2_flush
 
   
   predecoder.io.req.xcpt_ae_if:= f2_tlb_ae_if

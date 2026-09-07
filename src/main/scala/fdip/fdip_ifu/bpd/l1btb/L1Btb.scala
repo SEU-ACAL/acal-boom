@@ -11,6 +11,7 @@ import boom.fdip.common._
 import boom.fdip.util.{BoomCoreStringPrefix}
 import boom.fdip.ifu._
 import boom.fdip.ifu.bpd._
+import boom.perf._
 
 import scala.math.min
 
@@ -52,7 +53,10 @@ with L1BTBHelper{
 
 
   val btb      = Seq.fill(nWays) {SyncReadMem(nSets, new BTBEntry(offsetSz, tagSz))}
-
+	def inc_ctr(ctr: UInt, taken: Bool): UInt = {
+		Mux(!taken, Mux(ctr === 0.U, 0.U, ctr - 1.U),
+					Mux(ctr === 3.U, 3.U, ctr + 1.U))
+	}
 	val s0_valid = io.f0_valid && !doing_reset
 	val s0_pc    = io.f0_pc
 	val s0_idx   = fetchIdx(s0_pc)
@@ -119,29 +123,87 @@ with L1BTBHelper{
 	val t1_cfi = RegNext(t0_cfi)
 	val t1_valid = RegNext(t0_valid)
 	val t1_pc = RegNext(t0_pc)
-	val t1_hits = t1_meta.map{meta=>
-		meta.valid && meta.bits.position === t1_cfi.position && meta.bits.hit
+	// Read the trained block in parallel with the registered training metadata.
+	// The metadata identifies positions; the memory read preserves each entry's
+	// target and current saturating counter for per-way updates.
+	val t1_entries = VecInit(btb.map(_.read(t0_idx, t0_valid)))
+	val t1_blockHits = t1_meta.map(meta => meta.valid && meta.bits.hit)
+	val t1_cfiHits = t1_blockHits.zip(t1_meta).map { case (hit, meta) =>
+		hit && meta.bits.position === t1_cfi.position
 	}
-	val t1_hitMask = WireInit(VecInit(PriorityEncoderOH(t1_hits)))
-	val t1_hit = t1_hits.reduce(_||_)
+	val t1_cfiHit = t1_cfiHits.reduce(_ || _)
+	val t1_priorHits = t1_blockHits.zip(t1_meta).map { case (hit, meta) =>
+		hit && meta.bits.position < t1_cfi.position
+	}
 
-	val t1_attributeMismatch = t1_hit &&
-		t1_cfi.attribute.asUInt =/= Mux1H(t1_hitMask, t1_meta.map(_.bits.attribute.asUInt))
-	val t1_entryNeedUpdate = t1_valid && t1_cfi.mispredict && (t1_attributeMismatch || !t1_hit)
-	val randomWay =LFSR(nWays, t1_entryNeedUpdate)(log2Ceil(nWays) - 1, 0)
-	val t1_entry = Wire(new BTBEntry(offsetSz, tagSz))
-		t1_entry.position := t1_cfi.position
-		t1_entry.attribute := t1_cfi.attribute
-		t1_entry.target := t1_cfi.target(offsetSz+instOffsetBits-1,instOffsetBits)
-		t1_entry.targetCarry := getTargetCarry(t1_pc, t1_cfi.target)
-		t1_entry.tag := t1_tag(tagSz-1,0)
-		t1_entry.ctr := Mux(t1_cfi.taken, 3.U, 0.U) //direct's ctr(1) is 1
-		// Allocate on a miss and rewrite an existing entry only after a correction.
-	val t1_wayMask = Mux(t1_hit,t1_hitMask.asUInt.asUInt,UIntToOH(randomWay,nWays).asUInt)
+	def incCtr(ctr: UInt, taken: Bool): UInt = {
+		Mux(taken,
+			Mux(ctr === 3.U, 3.U, ctr + 1.U),
+			Mux(ctr === 0.U, 0.U, ctr - 1.U))
+	}
+
+	// On a CFI miss, prefer an unused way or an entry at/after the CFI. This
+	// keeps all earlier branches available for the not-taken updates below.
+	val replacementCandidates = VecInit(t1_blockHits.zip(t1_meta).map { case (hit, meta) =>
+		!hit || meta.bits.position >= t1_cfi.position
+	})
+	val replacementExists = replacementCandidates.reduce(_ || _)
+	val randomWay = LFSR(nWays, t1_valid && t1_cfi.valid && !t1_cfiHit)(log2Ceil(nWays) - 1, 0)
+	val replacementWay = Mux(replacementExists,
+		PriorityEncoder(replacementCandidates), randomWay)
+	val replacementMask = UIntToOH(replacementWay, nWays)
+
+	val newEntry = Wire(new BTBEntry(offsetSz, tagSz))
+	newEntry.position := t1_cfi.position
+	newEntry.attribute := t1_cfi.attribute
+	newEntry.target := t1_cfi.target(offsetSz + instOffsetBits - 1, instOffsetBits)
+	newEntry.targetCarry := getTargetCarry(t1_pc, t1_cfi.target)
+	newEntry.tag := t1_tag(tagSz - 1, 0)
+	// New conditional entries start weakly taken/not-taken; jumps are always taken.
+	newEntry.ctr := Mux(t1_cfi.attribute.isConditional,
+		Mux(t1_cfi.taken, 2.U, 1.U), 3.U)
+	val trainCfi = t1_valid && t1_cfi.valid
 	for (w <- 0 until nWays) {
-		when(t1_valid && t1_entryNeedUpdate && t1_wayMask(w).asBool){
-      btb(w).write(t1_idx,t1_entry)
+		val updateEntry = Wire(new BTBEntry(offsetSz, tagSz))
+		updateEntry := t1_entries(w)
+		val priorHit = trainCfi && t1_priorHits(w)
+		val cfiHit = trainCfi && t1_cfiHits(w)
+		val allocate = trainCfi && !t1_cfiHit && replacementMask(w)
+
+		when (priorHit) {
+			when (t1_entries(w).attribute.isConditional) {
+				updateEntry.ctr := incCtr(t1_entries(w).ctr, false.B)
+			}.otherwise {
+				updateEntry.ctr := 3.U
+			}
+		}
+		when (cfiHit) {
+			updateEntry.position := newEntry.position
+			updateEntry.attribute := newEntry.attribute
+			updateEntry.target := newEntry.target
+			updateEntry.targetCarry := newEntry.targetCarry
+			updateEntry.tag := newEntry.tag
+			updateEntry.ctr := Mux(newEntry.attribute.isConditional,
+				incCtr(t1_entries(w).ctr, t1_cfi.taken), 3.U)
+		}
+		when (allocate) {
+			updateEntry := newEntry
+		}
+
+		when (priorHit || cfiHit || allocate) {
+			btb(w).write(t1_idx, updateEntry)
 		}
 	}
+
+	XSPerfAccumulate("l1btb_train", t1_valid)
+	XSPerfAccumulate("l1btb_train_cfi", trainCfi)
+	XSPerfAccumulate("l1btb_cfi_hit", trainCfi && t1_cfiHit)
+	XSPerfAccumulate("l1btb_cfi_miss", trainCfi && !t1_cfiHit)
+	XSPerfAccumulate("l1btb_prior_hit", PopCount(t1_priorHits))
+	XSPerfAccumulate("l1btb_block_hit", PopCount(t1_blockHits))
+	XSPerfAccumulate("l1btb_allocate", PopCount(VecInit((0 until nWays).map { w =>
+		trainCfi && !t1_cfiHit && replacementMask(w)
+	})))
+	XSPerfAccumulate("l1btb_cfi_update", PopCount(t1_cfiHits.map(h => trainCfi && h)))
 
 }

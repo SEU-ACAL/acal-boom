@@ -86,6 +86,8 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   //目前s1级只有一个分支预测结果，后续需要扩展为多个分支预测结果
   val s1_predGhist      = s1_ghist.update(1.U, s1_prediction.bits.taken, s1_fire && s1_prediction.valid && s1_prediction.bits.attribute.isConditional)
 
+  val s1_finalPrediction = WireInit(s1_prediction)
+  s1_finalPrediction.bits.target  := Mux(s1_prediction.valid, s1_prediction.bits.target, nextFetch(s1_pc))
   btb.io.f0_valid := bpdF0Valid
   btb.io.f0_pc    := bpdF0Pc
   btb.io.train    := io.fromFtq.train
@@ -97,7 +99,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   tage.io.fromBtb.results := btb.io.resp
   tage.io.fromBtb.s1_position := btb.io.s1_position
 
-  val s2_s1_prediction  = RegEnable(s1_prediction,s1_fire)
+  val s2_s1_prediction  = RegEnable(s1_finalPrediction,s1_fire)
   val s2_s1_predGhist   = RegEnable(s1_predGhist,s1_fire)
   val s2_pc             = RegEnable(s1_pc,s1_fire)
   val s2_alignPc        = fetchAlign(s2_pc)
@@ -252,11 +254,11 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
     io.fromFtq.redirect_val                  -> io.fromFtq.redirect_pc,
     (s2_redirect || f2_correct_f1_ghist)     -> io.toFtq.resp.bits.f2.pred.target,
     s1_replay                                -> s1_pc,
-    s1_valid                                 -> io.toFtq.resp.bits.f1.pred.target
+    s1_valid           -> s1_finalPrediction.bits.target
   )
   )
   s0_valid              := (RegNext(reset.asBool) && !reset.asBool) || io.fromFtq.redirect_val ||
-                           s2_redirect || s1_valid ||s1_replay || f2_correct_f1_ghist
+                           s2_redirect || s1_valid || s1_replay || f2_correct_f1_ghist
 
   s0_ghist              := MuxCase((0.U).asTypeOf(new GlobalHistory),
   Seq(
@@ -294,7 +296,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   ras.io.write_idx   := Mux(redirect_ras_repair, redirect_rasState.idx, s2_rasState.idx)
 
 
-  io.toFtq.resp.bits.f1.pred    := s1_prediction.bits
+  io.toFtq.resp.bits.f1.pred    := s1_finalPrediction.bits
   io.toFtq.resp.bits.f1.rasState := s1_rasState
 
 
@@ -315,6 +317,21 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   io.toFtq.resp.bits.f2.valid   := s2_fire && (!s2_clear)
   io.toFtq.resp.bits.f2.ftq_idx := RegNext(io.fromFtq.ftq_idx)
   io.toFtq.resp.bits.f2.ghist   := s2_ghist
+
+  // BPU pipeline and training observability. These counters are deliberately
+  // kept at the predictor boundary so they can be compared with the core
+  // mispredict/FTQ counters without changing prediction behavior.
+  XSPerfAccumulate("bpu_req", bpdF0Valid)
+  XSPerfAccumulate("bpu_resp", io.toFtq.resp.valid)
+  XSPerfAccumulate("bpu_s1_replay", s1_replay)
+  XSPerfAccumulate("bpu_s2_redirect", s2_redirect)
+  XSPerfAccumulate("bpu_ghist_repair", f2_correct_f1_ghist)
+  XSPerfAccumulate("bpu_train", io.fromFtq.train.valid)
+  XSPerfAccumulate("bpu_train_cfi", io.fromFtq.train.valid && io.fromFtq.train.bits.cfi.valid)
+  XSPerfAccumulate("bpu_train_cond", io.fromFtq.train.valid &&
+    io.fromFtq.train.bits.cfi.valid && io.fromFtq.train.bits.cfi.attribute.isConditional)
+  XSPerfAccumulate("bpu_train_mispred", io.fromFtq.train.valid &&
+    io.fromFtq.train.bits.cfi.valid && io.fromFtq.train.bits.cfi.mispredict)
 
   // We don't care about meta from the f1 and f2 resps
   // Use the meta from the latest resp

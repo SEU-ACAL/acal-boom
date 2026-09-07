@@ -18,7 +18,7 @@ class MainPipe(implicit p: Parameters) extends ICacheModule{
     val io = IO(new Bundle{
         val flush = Input(Bool())
         val fromFtq = Flipped(DecoupledIO(new FTQToMainPipeIO))
-        val toIFU = DecoupledIO(new MainPipeDataResp)
+        val toIFU = DecoupledIO(new MainPipeToIFU)
         val wayLookupToMainPipe = Flipped(DecoupledIO(new WayLookupToMainPipe))
 
         val mainPipeDataReq = DecoupledIO(new MainPipeDataReq)
@@ -35,13 +35,13 @@ class MainPipe(implicit p: Parameters) extends ICacheModule{
     val s0_wayMask = s0_wayLookupEntry.waymask
     val s0_vSetIdx = s0_wayLookupEntry.vSetIdx
     val s0_pTag = s0_wayLookupEntry.pTag
-
+    val s0_startBank = fetchAlign(s0_ftqReq.fetch_pc)(blockOffBits - 1, blockOffBits - bankOffBits)
     val s1_ready = Wire(Bool())
 
     val s0_canIssue = io.mainPipeDataReq.ready &&s1_ready 
 
-    io.fromFtq.ready := io.fromFtq.valid && !io.flush && s0_canIssue
-    io.wayLookupToMainPipe.ready := io.wayLookupToMainPipe.valid && !io.flush && s0_canIssue
+    io.fromFtq.ready := io.wayLookupToMainPipe.valid && !io.flush && s0_canIssue
+    io.wayLookupToMainPipe.ready := io.fromFtq.valid && !io.flush && s0_canIssue
 
     s0_fire := s0_valid && s0_canIssue
 
@@ -53,6 +53,7 @@ class MainPipe(implicit p: Parameters) extends ICacheModule{
     val s1_vSetIdx = RegEnable(s0_vSetIdx,s0_fire)
     val s1_pTag = RegEnable(s0_pTag,s0_fire)
     val s1_valid = RegInit(false.B)
+    val s1_startBank = RegEnable(s0_startBank,s0_fire)
     val s1_sramValid = RegNext(s0_fire)
     when(io.flush){
         s1_valid := false.B
@@ -86,20 +87,22 @@ class MainPipe(implicit p: Parameters) extends ICacheModule{
     val s1_finalData = Mux(s1_missRespHit, s1_missDataResp,
         Mux(s1_sramValid, s1_dataResp, s1_dataHold))
 
-    val s1_fetchFinish = !s1_waitMissResp || s1_missRespHit
+    val s1_fetchFinish = s1_finalHit
     // 取指令完成或者!s1_valid
     s1_ready := s1_fetchFinish && io.toIFU.ready || !s1_valid
 
 
 
     io.mainPipeMissReq.valid := s1_valid && !s1_finalHit && !s1_waitMissResp
-    io.mainPipeMissReq.bits.blkPaddr := Cat(s1_pTag,s1_vSetIdx,0.U(blockOffBits.W))
+    io.mainPipeMissReq.bits.blkPaddr := Cat(s1_pTag,s1_vSetIdx)
     io.mainPipeMissReq.bits.way := PriorityEncoder(s1_wayMask)
     io.mainPipeMissReq.bits.vSetIdx := s1_vSetIdx
 
 
     io.toIFU.valid := s1_valid && s1_fetchFinish && s1_finalHit
-    io.toIFU.bits := s1_finalData
+    io.toIFU.bits.data := s1_finalData.data
+    io.toIFU.bits.startBank := s1_startBank
 
     s1_fire := s1_valid && s1_fetchFinish && io.toIFU.ready
+    dontTouch(s1_fire)
 }

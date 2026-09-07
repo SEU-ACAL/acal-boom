@@ -11,6 +11,7 @@ import boom.fdip.common._
 import boom.fdip.util.{BoomCoreStringPrefix, MaskLower, WrapInc}
 import boom.fdip.ifu._
 import boom.fdip.ifu.bpd._
+import boom.perf._
 
 import scala.math.min
 class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPeriod: Int)
@@ -222,7 +223,6 @@ Train Stage
     对于正常的项:
       1.hitBTB并且有provider，那么更新provider的Ctr和U
       2.如果预测是alt给出的，更新alt的Ctr
-
     allocate和正常更新的table撞了如何解决?
      */
     val t0_mispredHitTableMask = t0_btbMeta.zipWithIndex.map{case(btb,btbIdx)=>
@@ -235,7 +235,7 @@ Train Stage
     val t0_mispredHitTableMeta = t0_tageMeta.provider(t0_mispredHitTableMetaIdx)
     val t0_mispredHasProvider = t0_mispredHitTableMask.reduce(_||_) && t0_mispredHitTableMeta.valid
     //provider是不是最长的，此时无法分配
-    val t0_providerIsLongest = t0_mispredHasProvider && (t0_mispredHitTableMeta.bits === TageTables.U)
+    val t0_providerIsLongest = t0_mispredHasProvider && (t0_mispredHitTableMeta.bits === (TageTables - 1).U)
     //TODO:allocate 算法可以优化
     val t0_needAllocate = t0_cfi.valid && t0_cfi.attribute.isConditional && t0_cfi.mispredict && !t0_providerIsLongest 
     val t0_canAllocate = t0_tageMeta.allocate(t0_cfi.position).valid || !t0_mispredHitTableMask.reduce(_||_)
@@ -248,14 +248,20 @@ Train Stage
     val t0_providerUpdateInfo = (0 until tageNTables).map{i=>
       
       val updateInfo = t0_tageMeta.provider.zip(t0_btbMeta).zipWithIndex.map{case((p,btb),idx)=>
-        
-        val normalHit = p.valid && p.bits === i.U && btb.valid && btb.bits.hit && 
-          btb.bits.attribute.isConditional && t0_cfi.position =/= btb.bits.position
-        val endCfiHit = p.valid && p.bits === i.U && t0_cfi.valid && p.valid&& 
-          t0_cfi.position === btb.bits.position
-        
-        val normalNeedUpdateCtr =normalHit && t0_tageMeta.provider_ctr(idx) =/= 0.U 
-        val normalIncCtr = !normalNeedUpdateCtr   
+        val hasProvider = t0_valid && p.valid && p.bits === i.U
+        val btbCondHit = t0_valid && btb.valid && btb.bits.hit &&
+          btb.bits.attribute.isConditional
+        // A normal update is for a conditional branch before the resolved CFI.
+        // If the block has no resolved CFI, every visible conditional branch is NT.
+        val normalPosition = !t0_cfi.valid || btb.bits.position < t0_cfi.position
+        val normalHit = hasProvider && btbCondHit && normalPosition
+        // The end-CFI update must refer to a real conditional BTB hit; comparing
+        // position alone can otherwise train an invalid way (position defaults 0).
+        val endCfiHit = hasProvider && btbCondHit && t0_cfi.valid &&
+          t0_cfi.attribute.isConditional && t0_cfi.position === btb.bits.position
+
+        val normalNeedUpdateCtr = normalHit && t0_tageMeta.provider_ctr(idx) =/= 0.U
+        val normalIncCtr = !normalNeedUpdateCtr
 
         val endCfiNeedUpdateCtr =  endCfiHit && 
         !(t0_tageMeta.provider_ctr(idx) === 7.U && t0_cfi.taken || 
@@ -264,23 +270,43 @@ Train Stage
 
 
         //normal默认是不taken
-        val normalNeedUpdateUseful = p.valid && p.bits === i.U && btb.valid && btb.bits.hit && 
-        t0_tageMeta.alt_differs(idx) && t0_cfi.position =/= btb.bits.position && 
-        !t0_tageMeta.provider_u(idx) === 3.U
-        //endcfi
-        val endCfiNeedUpdateUseful = p.valid && p.bits === i.U && t0_cfi.valid && p.valid && 
-        t0_cfi.position === btb.bits.position && t0_tageMeta.alt_differs(idx) && t0_tageMeta.provider_ctr(idx)(2) === t0_cfi.taken && 
-        !t0_tageMeta.provider_u(idx) === 3.U
-        
+        // Useful updates require a provider/BTB position match, disagreement
+        // with the alternate predictor, a correct provider prediction, and U<3.
+        val usefulProviderCandidate = hasProvider
+        val usefulBtbCandidate = usefulProviderCandidate && btbCondHit
+        val usefulPositionCandidate = usefulBtbCandidate && (normalPosition ||
+          (t0_cfi.valid && t0_cfi.attribute.isConditional &&
+            t0_cfi.position === btb.bits.position))
+        val usefulAltCandidate = usefulPositionCandidate && t0_tageMeta.alt_differs(idx)
+        val usefulCorrectCandidate = usefulAltCandidate && Mux(
+          endCfiHit,
+          t0_tageMeta.provider_ctr(idx)(2) === t0_cfi.taken,
+          !t0_tageMeta.provider_ctr(idx)(2))
+        val usefulNotSaturatedCandidate = usefulCorrectCandidate &&
+          t0_tageMeta.provider_u(idx) =/= 3.U
+        val normalNeedUpdateUseful = usefulNotSaturatedCandidate && normalHit
+        val endCfiNeedUpdateUseful = usefulNotSaturatedCandidate && endCfiHit
 
-        (endCfiNeedUpdateCtr || normalNeedUpdateCtr , endCfiIncCtr || normalIncCtr , endCfiNeedUpdateUseful || normalNeedUpdateUseful, normalHit || endCfiHit)
+        (endCfiNeedUpdateCtr || normalNeedUpdateCtr,
+          endCfiIncCtr || normalIncCtr,
+          endCfiNeedUpdateUseful || normalNeedUpdateUseful,
+          normalHit || endCfiHit,
+          usefulProviderCandidate,
+          usefulBtbCandidate,
+          usefulPositionCandidate,
+          usefulAltCandidate,
+          usefulCorrectCandidate,
+          usefulNotSaturatedCandidate)
       }
       val needUpdateCtr = VecInit(updateInfo.map(_._1))
       val incCtr        = VecInit(updateInfo.map(_._2))
       val updateUseful  = VecInit(updateInfo.map(_._3))
       val hits             = VecInit(updateInfo.map(_._4))
       val hitPosition = Mux1H(hits, t0_btbMeta.map(_.bits.position))
-      (needUpdateCtr.reduce(_||_), incCtr.reduce(_||_), updateUseful.reduce(_||_),hits, hitPosition)
+      (needUpdateCtr.reduce(_||_), incCtr.reduce(_||_), updateUseful.reduce(_||_),hits, hitPosition,
+        VecInit(updateInfo.map(_._5)), VecInit(updateInfo.map(_._6)),
+        VecInit(updateInfo.map(_._7)), VecInit(updateInfo.map(_._8)),
+        VecInit(updateInfo.map(_._9)), VecInit(updateInfo.map(_._10)))
     }
     val t0_providerUpdateNeed =
       VecInit(t0_providerUpdateInfo.map(_._1))
@@ -315,4 +341,22 @@ Train Stage
       tables(i).io.writeReq.bits.entry.ctr    := Mux(alloc, Cat(t0_cfi.taken,0.U(2.W)),hitNewCtr)
       tables(i).io.writeReq.bits.u      := Mux(alloc, 0.U(2.W), hitNewU)
     }
+
+    XSPerfAccumulate("tage_train", t0_valid)
+    XSPerfAccumulate("tage_train_cfi", t0_valid && t0_cfi.valid)
+    XSPerfAccumulate("tage_train_cond", t0_valid && t0_cfi.valid && t0_cfi.attribute.isConditional)
+    XSPerfAccumulate("tage_train_mispred", t0_valid && t0_cfi.valid && t0_cfi.mispredict)
+    XSPerfAccumulate("tage_provider_hit", PopCount(t0_tageMeta.provider.map(_.valid)))
+    XSPerfAccumulate("tage_provider_longest", t0_providerIsLongest)
+    XSPerfAccumulate("tage_allocate_req", t0_needAllocate)
+    XSPerfAccumulate("tage_allocate_do", t0_needAllocate && t0_canAllocate)
+    XSPerfAccumulate("tage_provider_ctr_update", PopCount(t0_providerUpdateNeed))
+    XSPerfAccumulate("tage_provider_u_update", PopCount(t0_providerUpdateUseful))
+    XSPerfAccumulate("tage_provider_hit_entries", PopCount(t0_hitBtbVec.flatten))
+    XSPerfAccumulate("tage_u_candidate_provider", PopCount(t0_providerUpdateInfo.flatMap(_._6)))
+    XSPerfAccumulate("tage_u_candidate_btb_cond", PopCount(t0_providerUpdateInfo.flatMap(_._7)))
+    XSPerfAccumulate("tage_u_candidate_position", PopCount(t0_providerUpdateInfo.flatMap(_._8)))
+    XSPerfAccumulate("tage_u_candidate_alt_differs", PopCount(t0_providerUpdateInfo.flatMap(_._9)))
+    XSPerfAccumulate("tage_u_candidate_correct", PopCount(t0_providerUpdateInfo.flatMap(_._10)))
+    XSPerfAccumulate("tage_u_candidate_not_saturated", PopCount(t0_providerUpdateInfo.flatMap(_._11)))
 }

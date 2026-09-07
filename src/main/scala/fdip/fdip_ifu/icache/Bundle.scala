@@ -82,7 +82,10 @@ class MainPipeDataReq(implicit p: Parameters) extends ICacheBundle{
 class MainPipeDataResp(implicit p: Parameters) extends ICacheBundle{
   val data:     UInt = UInt((cacheBlockBytes*8).W)
 }
-
+class MainPipeToIFU(implicit p: Parameters) extends ICacheBundle{
+  val data:     UInt = UInt((cacheBlockBytes*8).W)
+  val startBank: UInt = UInt(bankOffBits.W)
+}
 class ICacheMetaWriteBundle(implicit p: Parameters) extends ICacheBundle {
     val virIdx      = UInt((log2Up(nSets)).W)
     val phyTag      = UInt((vaddrBitsExtended - blockOffBits).W)

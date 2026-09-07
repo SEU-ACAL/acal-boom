@@ -40,10 +40,14 @@ class WayLookup(implicit p: Parameters) extends ICacheModule{
     val writePtrFlag = writePtr(log2Ceil(WayLookupEntrySz))
     val readPtrFlag = readPtr(log2Ceil(WayLookupEntrySz))
 
-    val full = writePtrValue === readPtrValue && writePtrFlag =/= readPtrFlag
-    val empty = writePtrValue === readPtrValue && writePtrFlag === readPtrFlag
+    val full = WireInit(writePtrValue === readPtrValue && writePtrFlag =/= readPtrFlag)
+    val empty = WireInit(writePtrValue === readPtrValue && writePtrFlag === readPtrFlag)
     val updateStall = WireInit(VecInit(Seq.fill(WayLookupEntrySz)(false.B)))
 
+
+    dontTouch(full)
+    dontTouch(empty)
+    dontTouch(updateStall)
     io.write.ready := !full && !io.flush
     io.wayLookupToMainPipe.valid := !empty && !updateStall(readPtrValue) && !io.flush
     io.wayLookupToMainPipe.bits.entry := entry(readPtrValue)
@@ -65,7 +69,7 @@ class WayLookup(implicit p: Parameters) extends ICacheModule{
     (entry zip updateStall).map{case (e, stall) =>
         when(io.update.valid){
             val setSame = io.update.bits.vSetIdx === e.vSetIdx
-            val tagSame = io.update.bits.blkPaddr >> blockOffBits.U === e.pTag
+            val tagSame = io.update.bits.blkPaddr >> nSetsBits.U === e.pTag
             val waySame = UIntToOH(io.update.bits.way) === e.waymask
             when(setSame){
                 when(tagSame){
@@ -78,14 +82,6 @@ class WayLookup(implicit p: Parameters) extends ICacheModule{
         }
     }
 
-    when(io.update.valid){
-        val updateEntry = WireInit(0.U.asTypeOf(new WayLookupEntry))
-        updateEntry.vSetIdx := io.update.bits.vSetIdx
-        updateEntry.waymask := (1.U << io.update.bits.way)
-        updateEntry.pTag := io.update.bits.blkPaddr >> blockOffBits.U
 
-        entry(readPtr) := updateEntry
-        readPtr := readPtr + 1.U
-    }
 
 }

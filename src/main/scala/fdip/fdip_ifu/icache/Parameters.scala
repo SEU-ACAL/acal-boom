@@ -20,7 +20,7 @@ trait HasICacheParameters extends HasBoomFrontendParameters with HasBoomCorePara
   def nWaysBits: Int = log2Ceil(nWays)
   def fetchBankNum: Int = fetchBytes / (blockBytes / numBanks)
   def WayLookupEntrySz: Int = 16
-  def numBanks: Int = 8
+  def numBanks: Int = 4
   def bankBits = (blockBytes/numBanks)*8
   val bankOffBits = log2Up(numBanks)
 }
