@@ -174,7 +174,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   s2_prediction.cfiPosition := s2_firstTakenBranch.bits.cfiPosition
   s2_prediction.target      := s2_target
   s2_prediction.attribute   := s2_firstTakenBranch.bits.attribute
-  val s2_predGhist = s2_ghist.update(s2_btbHitNum, s2_taken, s2_fire && s2_firstTakenBranch.valid)
+  val s2_predGhist = s2_ghist.update(s2_btbHitNum, s2_taken,s2_firstTakenBranch.valid && s2_firstTakenBranch.bits.attribute.isConditional, s2_fire && s2_firstTakenBranch.valid)
   val bpdMeta = Wire(new BranchPredictionMeta)
   bpdMeta.tage     := tage.io.meta
   bpdMeta.btb      := btb.io.meta

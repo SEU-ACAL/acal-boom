@@ -33,12 +33,19 @@ class GlobalHistory(implicit p: Parameters) extends BoomBundle()(p)
  * @return: 更新后的全局历史
  */
 
- def update(shamt: UInt, endCfiTaken: Bool, updateEnable: Bool): GlobalHistory = {
+//  def update(shamt: UInt, endCfiTaken: Bool, updateEnable: Bool): GlobalHistory = {
+//     val new_history = Wire(new GlobalHistory)
+//     val shamtUpdateBits = Cat(0.U(shamt.getWidth.W), endCfiTaken)
+//     new_history.old_history := Mux(updateEnable, (histories << shamt) | shamtUpdateBits(shamt.getWidth, 0), histories)
+
+//     new_history
+//   }
+
+  def update(shamt: UInt, endCfiTaken: Bool, endCfiIsCond: Bool, updateEnable: Bool): GlobalHistory = {
     val new_history = Wire(new GlobalHistory)
-    val shamtUpdateBits = Cat(0.U(shamt.getWidth.W), endCfiTaken)
+    val shamtUpdateBits = Mux(endCfiIsCond, Cat(0.U(shamt.getWidth.W), endCfiTaken), 0.U(shamt.getWidth.W))
     new_history.old_history := Mux(updateEnable, (histories << shamt) | shamtUpdateBits(shamt.getWidth, 0), histories)
 
     new_history
   }
-
 }

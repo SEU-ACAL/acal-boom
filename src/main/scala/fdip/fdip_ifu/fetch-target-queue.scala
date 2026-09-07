@@ -567,12 +567,14 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   */
   val backend_redirectPosition = Mux(io.fromBackend.brupdate.b2.uop.is_rvc || io.fromBackend.brupdate.b2.uop.edge_inst,
     io.fromBackend.brupdate.b2.uop.pc_lob/(coreInstBytes.U),io.fromBackend.brupdate.b2.uop.pc_lob/(coreInstBytes.U) + 1.U)
-  val redirect_needUpdateGhist = io.fromBackend.redirect_val && io.fromBackend.brupdate.b2.mispredict && io.fromBackend.brupdate.b2.uop.is_br
+
   val backend_redirect_meta = meta(ftqMemIdx(io.fromBackend.redirect_ftq_idx))
   val backend_redirectHitBtb = backend_redirect_meta.btb.map{meta=>
     meta.valid && meta.bits.position === backend_redirectPosition && io.fromBackend.redirect_val &&
-    (io.fromBackend.brupdate.b2.mispredict)
+    (io.fromBackend.brupdate.b2.mispredict) && io.fromBackend.brupdate.b2.uop.is_br
   }
+  val backend_redirectIsCond = io.fromBackend.redirect_val && io.fromBackend.brupdate.b2.mispredict && io.fromBackend.brupdate.b2.uop.is_br
+
   //
   val backend_hitBtbNum =  backend_redirect_meta.btb.map{meta=>
     meta.valid && meta.bits.attribute.isConditional && 
@@ -580,18 +582,21 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
     (meta.bits.position <= backend_redirectPosition && io.fromBackend.brupdate.b2.uop.is_br ||
     meta.bits.position < backend_redirectPosition && !io.fromBackend.brupdate.b2.uop.is_br)
   }
-
+  val redirect_needUpdateGhist = io.fromBackend.redirect_val && io.fromBackend.brupdate.b2.mispredict &&
+    (io.fromBackend.brupdate.b2.uop.is_br || backend_hitBtbNum=/=0.U)
+//TODO: update GHR update
   val backendHitCountWidth = log2Ceil(backend_redirect_meta.btb.length + 2)
   val backend_finalHitNum = Wire(UInt(backendHitCountWidth.W))
   backend_finalHitNum := Mux(
     backend_redirectHitBtb.reduce(_||_),
     PopCount(backend_hitBtbNum),
-    PopCount(backend_hitBtbNum) + 1.U)
+    Mux(backend_redirectIsCond, PopCount(backend_hitBtbNum) + 1.U, PopCount(backend_hitBtbNum)))
   val redirect_needUpdateGhist_r = RegNext(redirect_needUpdateGhist)
   val backend_finalHitNum_r = Reg(UInt(backendHitCountWidth.W))
   backend_finalHitNum_r := backend_finalHitNum
+  val backend_redirectIsCond_r = RegNext(backend_redirectIsCond)
   val backend_redirect_taken_r = RegNext(io.fromBackend.brupdate.b2.taken)
-  backend_redirect_ghist := Mux(redirect_needUpdateGhist_r, bpd_update_ghist.update(backend_finalHitNum_r, backend_redirect_taken_r, redirect_needUpdateGhist_r), bpd_update_ghist)
+  backend_redirect_ghist := Mux(redirect_needUpdateGhist_r, bpd_update_ghist.update(backend_finalHitNum_r, backend_redirect_taken_r,backend_redirectIsCond_r,redirect_needUpdateGhist_r), bpd_update_ghist)
 
 
 

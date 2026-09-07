@@ -11,6 +11,7 @@ import boom.fdip.common._
 import boom.fdip.util.{BoomCoreStringPrefix, WrapInc}
 import boom.fdip.ifu._
 import boom.fdip.ifu.bpd._
+import boom.perf._
 
 import scala.math.min
 
@@ -51,7 +52,8 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p) 
   val s1_hits      = s1_hit_ohs.reduce(_||_)
   val s1_hit_entry = PriorityEncoder(s1_hit_ohs)
   val s1_instOffset = s1_pc(log2Ceil(fetchBytes)-1,1)
-  io.resp.valid              := s1_hits && s1_valid && btb_entries(s1_hit_entry).position >= s1_instOffset
+  val s1_hitAfterOffset = s1_hits && btb_entries(s1_hit_entry).position >= s1_instOffset
+  io.resp.valid              := s1_valid && s1_hitAfterOffset
   io.resp.bits.attribute     := Mux(s1_hits, btb_entries(s1_hit_entry).attribute, 0.U.asTypeOf(new BranchAttribute))
   io.resp.bits.cfiPosition   := Mux(s1_hits, btb_entries(s1_hit_entry).position, 0.U)
   io.resp.bits.target        := getFullTarget(s1_pc, btb_entries(s1_hit_entry).target) 
@@ -92,12 +94,17 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p) 
   val t1_update_entry = Wire(new MicroBTBEntry)
   val t1_existing_entry = Mux(t1_hit, btb_entries(t1_hit_entry), 0.U.asTypeOf(new MicroBTBEntry))
   val t1_update_way = Mux(t1_hit, t1_hit_entry, randomWay)
-  val t1_posMismatch = t1_valid && t1_hit && (btb_entries(t1_hit_entry).position =/= t1_position)
-  val t1_attrMismatch = t1_valid && t1_hit && (btb_entries(t1_hit_entry).attribute.asUInt =/= t1_attribute.asUInt)
+  val t1_posMismatch = WireInit(t1_valid && t1_hit && (btb_entries(t1_hit_entry).position =/= t1_position))
+  val t1_attrMismatch = WireInit(t1_valid && t1_hit && (btb_entries(t1_hit_entry).attribute.asUInt =/= t1_attribute.asUInt))
+
   
   t0_hitT1Victim := t1_valid && (t0_hit_entry === t1_update_way) && t1_allocate
   t0_hitT1Update := t1_valid && (t0_tag === t1_tag) && (t1_allocate || t1_hit)
 
+  dontTouch(t0_hitT1Victim)
+  dontTouch(t0_hitT1Update)
+  dontTouch(t1_posMismatch)
+  dontTouch(t1_attrMismatch)
   t1_update_entry := t1_existing_entry
 
 
@@ -126,4 +133,22 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p) 
   when(t1_valid&&(t1_allocate||t1_hit)){
     btb_entries(t1_update_way) := t1_update_entry
   }
+
+  // UBTB is the f1 predictor. Keep lookup acceptance, offset filtering, and
+  // each training outcome separate so prediction losses can be attributed
+  // without changing its replacement or counter behavior.
+  XSPerfAccumulate("ubtb_req", s0_valid)
+  XSPerfAccumulate("ubtb_tag_hit", s1_valid && s1_hits)
+  XSPerfAccumulate("ubtb_hit_before_offset", s1_valid && s1_hits && !s1_hitAfterOffset)
+  XSPerfAccumulate("ubtb_resp_hit", io.resp.valid)
+  XSPerfAccumulate("ubtb_train", t1_valid)
+  XSPerfAccumulate("ubtb_train_taken", t1_valid && t1_taken)
+  XSPerfAccumulate("ubtb_train_hit", t1_valid && t1_hit)
+  XSPerfAccumulate("ubtb_allocate", t1_allocate)
+  XSPerfAccumulate("ubtb_train_not_taken", t1_valid && t1_hit && !t1_taken)
+  XSPerfAccumulate("ubtb_train_pos_mismatch", t1_posMismatch)
+  XSPerfAccumulate("ubtb_train_attr_mismatch", t1_attrMismatch)
+  XSPerfAccumulate("ubtb_train_rewrite", t1_valid && t1_hit &&
+    (!t1_taken || t1_posMismatch || t1_attrMismatch) &&
+    btb_entries(t1_hit_entry).ctr === 0.U)
 }
