@@ -84,7 +84,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   val s1_ghist          = RegEnable(s0_ghist,0.U.asTypeOf(new GlobalHistory),s0_fire)
   val s1_rasState       = RegEnable(s0_rasState,s0_fire)
   //目前s1级只有一个分支预测结果，后续需要扩展为多个分支预测结果
-  val s1_predGhist      = s1_ghist.update(1.U, s1_prediction.bits.taken, s1_fire && s1_prediction.valid && s1_prediction.bits.attribute.isConditional)
+  val s1_predGhist      = s1_ghist.update(1.U, s1_prediction.bits.taken,s1_fire && s1_prediction.valid && s1_prediction.bits.attribute.isConditional, s1_fire && s1_prediction.valid && s1_prediction.bits.attribute.isConditional)
 
   val s1_finalPrediction = WireInit(s1_prediction)
   s1_finalPrediction.bits.target  := Mux(s1_prediction.valid, s1_prediction.bits.target, nextFetch(s1_pc))

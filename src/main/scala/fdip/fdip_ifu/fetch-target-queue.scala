@@ -583,7 +583,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
     meta.bits.position < backend_redirectPosition && !io.fromBackend.brupdate.b2.uop.is_br)
   }
   val redirect_needUpdateGhist = io.fromBackend.redirect_val && io.fromBackend.brupdate.b2.mispredict &&
-    (io.fromBackend.brupdate.b2.uop.is_br || backend_hitBtbNum=/=0.U)
+    (io.fromBackend.brupdate.b2.uop.is_br || PopCount(backend_hitBtbNum)=/=0.U)
 //TODO: update GHR update
   val backendHitCountWidth = log2Ceil(backend_redirect_meta.btb.length + 2)
   val backend_finalHitNum = Wire(UInt(backendHitCountWidth.W))
