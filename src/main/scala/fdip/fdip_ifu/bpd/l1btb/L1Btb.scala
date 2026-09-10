@@ -170,7 +170,8 @@ with L1BTBHelper{
 	t1_newEntry.tag := t1_tag(tagSz - 1, 0)
 
 	val t1_trainCfi = t1_valid && t1_cfi.valid
-	val t1_needUpdateEntry = t1_valid && t1_cfi.valid && t1_cfi.mispredict && (!t1_cfiHit || t1_cfiHitEntry.attribute =/= t1_cfi.attribute)
+	//TODO: add indirect branch update logic
+	val t1_needUpdateEntry = t1_valid && t1_cfi.valid && t1_cfi.mispredict && (!t1_cfiHit || t1_cfiHitEntry.attribute =/= t1_cfi.attribute || t1_cfi.attribute.isOtherIndirect)
 	val t1_updateEntryWay = Mux(!t1_cfiHit, replacementWay, PriorityEncoder(t1_cfiHits))
 
 	val t1_needUpdateCtr = WireInit(VecInit(Seq.tabulate(nWays)(_ => false.B)))
@@ -200,6 +201,18 @@ with L1BTBHelper{
 
 	XSPerfAccumulate("l1btb_train", t1_valid)
 	XSPerfAccumulate("l1btb_train_cfi", t1_trainCfi)
+	// Break down every resolved CFI training event by its architectural type.
+	// Categories intentionally are not mutually exclusive: calls/returns are
+	// also indirect (and a direct call is also direct), matching BranchAttribute
+	// predicates used throughout the predictor.
+	XSPerfSeqAccumulate("l1btb_train_cfi_type", t1_trainCfi, Seq(
+		("total", true.B),
+		("direct", t1_cfi.attribute.isDirect),
+		("otherIndirect", t1_cfi.attribute.isOtherIndirect),
+		("call", t1_cfi.attribute.isCall),
+		("return", t1_cfi.attribute.isReturn),
+		("conditional", t1_cfi.attribute.isConditional)
+	))
 	XSPerfAccumulate("l1btb_cfi_hit", t1_trainCfi && t1_cfiHit)
 	XSPerfAccumulate("l1btb_cfi_miss", t1_trainCfi && !t1_cfiHit)
 	XSPerfAccumulate("l1btb_entry_update", PopCount(t1_entryWrite))

@@ -50,6 +50,23 @@ object XSPerfAccumulate {
   }
 }
 
+/**
+  * Register a group of related boolean counters under one common prefix.
+  * This mirrors XiangShan's XSPerfSeqAccumulate API while keeping the BOOM
+  * perf implementation self-contained.
+  */
+object XSPerfSeqAccumulate {
+  def apply(
+    perfNamePrefix: String,
+    perfValid: Bool,
+    perfCntSeq: Seq[(String, Bool)]
+  )(implicit p: Parameters): Unit = {
+    perfCntSeq.foreach { case (name, valid) =>
+      XSPerfAccumulate(s"${perfNamePrefix}_${name}", perfValid && valid)
+    }
+  }
+}
+
 class XSPerfEndpoint(perfName: String) extends BlackBox(Map(
   "PERF_NAME" -> StringParam(perfName)
 )) with HasBlackBoxResource {
