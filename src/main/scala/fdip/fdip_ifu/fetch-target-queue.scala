@@ -27,6 +27,7 @@ import boom.fdip.util._
 import boom.fdip.exu._
 import boom.fdip.util._
 import boom.fdip.ifu.bpd._
+import boom.perf._
  import boom.fdip.ifu.bpd.ras.RasState
 import freechips.rocketchip.tilelink.TLMessages.isA
 import os.write.over
@@ -308,6 +309,9 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
 
   //s2,s3阶段的重定向写入的优先级更高
   val bpu_s2_redirect = WireInit(io.fromBpu.resp.bits.f2.hasRedirect)
+  val backend_resteer = io.fromBackend.redirect_val
+  val backend_redirect = backend_resteer && io.fromBackend.brupdate.b2.mispredict
+  val ifu_redirect = io.fromIfu.redirect_from_fetch
   //PC ENQ
   val bpu_in_resp    = io.fromBpu.resp.bits.selectedResp
   val bpu_in_stage   = io.fromBpu.resp.bits.selectedRespIdxForFtq
@@ -315,6 +319,28 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   val bpu_in_entry   = io.fromBpu.resp.bits.selectedFtqentry
   val bpu_in_wen     = (io.fromBpu.resp.fire || bpu_s2_redirect) && 
                       !(io.fromBackend.redirect_val||io.fromIfu.redirect_from_fetch)//后端重定向时不写入
+
+  // FTQ applies backend, IFU, then BPU-f2 redirect priority. Keep source
+  // counters mutually exclusive so their sum is the effective redirect count.
+  XSPerfSeqAccumulate("redirect_source", true.B, Seq(
+    ("backend", backend_resteer),
+    ("ifu", !backend_resteer && ifu_redirect),
+    ("bpu_f2", !backend_resteer && !ifu_redirect && bpu_s2_redirect)
+  ))
+  // A backend mispredict with equal predicted/resolved direction is a target
+  // or CFI-position error. The branch unit does not expose those two causes
+  // separately, so preserve that limitation in the counter name.
+  XSPerfSeqAccumulate("backend_redirect", backend_redirect, Seq(
+    ("total", true.B),
+    ("conditional", io.fromBackend.brupdate.b2.cfi_type === CFI_BR),
+    ("direct", io.fromBackend.brupdate.b2.cfi_type === CFI_JAL),
+    ("indirect", io.fromBackend.brupdate.b2.cfi_type === CFI_JALR),
+    ("call", io.fromBackend.brupdate.b2.is_call),
+    ("return", io.fromBackend.brupdate.b2.is_ret),
+    ("direction_taken", io.fromBackend.brupdate.b2.taken && !io.fromBackend.brupdate.b2.uop.taken),
+    ("direction_not_taken", !io.fromBackend.brupdate.b2.taken && io.fromBackend.brupdate.b2.uop.taken),
+    ("target_or_position", io.fromBackend.brupdate.b2.taken === io.fromBackend.brupdate.b2.uop.taken)
+  ))
 
   val bpu_last_stage_resp = WireInit(io.fromBpu.resp.bits.lastStage)
   val bpu_last_stage_ptr  = WireInit(io.fromBpu.resp.bits.lastStage.ftq_idx)
@@ -412,7 +438,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   val bpd_update_target     = RegNext(pc_mem(ftqMemIdx(CirWrapInc(bpd_update_ptr))).start_pc)
 
   val ras_update_info       = RegNext(Mux(io.fromBackend.redirect_val&&io.fromBackend.brupdate.b2.mispredict,pd_mem(bpd_update_idx),new_entry))
-  //只有commit阶段可能遇到读写同时发生，此时阻塞读，直到写入完成
+
   bpd_update_ptr                     := Mux(io.fromBackend.redirect_val&&io.fromBackend.brupdate.b2.mispredict,
                             io.fromBackend.redirect_ftq_idx,Mux(io.fromIfu.redirect_from_fetch,
                             io.fromIfu.redirect_ftq_idx,commit_ptr))

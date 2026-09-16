@@ -38,6 +38,29 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
     // val update = Input(Valid(new BranchPredictionUpdate))
   })
 
+  class BpuPredictionTrace extends Bundle {
+    val startPc = UInt(vaddrBitsExtended.W)
+    val f1Taken = Bool()
+    val f1Position = UInt(log2Ceil(fetchBytes).W)
+    val f2Taken = Bool()
+    val f2Position = UInt(log2Ceil(fetchBytes).W)
+    val f2Target = UInt(vaddrBitsExtended.W)
+    val s2Redirect = Bool()
+    val ghistRepair = Bool()
+  }
+
+  class BpuTrainTrace extends Bundle {
+    val startPc = UInt(vaddrBitsExtended.W)
+    val cfiValid = Bool()
+    val cfiPosition = UInt(log2Ceil(fetchBytes).W)
+    val actualTaken = Bool()
+    val mispredict = Bool()
+    val attribute = UInt(io.fromFtq.train.bits.cfi.attribute.getWidth.W)
+  }
+
+  private val predictionTrace = ChiselDB.createTable("BpuPredictionTrace", new BpuPredictionTrace)
+  private val trainTrace = ChiselDB.createTable("BpuTrainTrace", new BpuTrainTrace)
+
   //TODO: BTB need to record call or ret so that we can use RAS and predict update
   // Fixed predictor topology: FAMicroBTB -> BTB -> TAGE.
   val microBtb = Module(new FAMicroBTBBranchPredictor())
@@ -318,6 +341,17 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   io.toFtq.resp.bits.f2.ftq_idx := RegNext(io.fromFtq.ftq_idx)
   io.toFtq.resp.bits.f2.ghist   := s2_ghist
 
+  // f2 can override f1 either because its predicted next PC differs or to
+  // repair speculative history. For a target redirect, classify the f1/f2
+  // disagreement by direction, terminal CFI position, then target-only.
+  val bpu_override = s2_redirect || f2_correct_f1_ghist
+  val bpu_override_direction = s2_redirect &&
+    (s1_previous_pred_info.pred.taken =/= s2_prediction.taken)
+  val bpu_override_position = s2_redirect && !bpu_override_direction &&
+    (s1_previous_pred_info.pred.cfiPosition =/= s2_prediction.cfiPosition)
+  val bpu_override_target = s2_redirect && !bpu_override_direction &&
+    !bpu_override_position
+
   // BPU pipeline and training observability. These counters are deliberately
   // kept at the predictor boundary so they can be compared with the core
   // mispredict/FTQ counters without changing prediction behavior.
@@ -326,12 +360,43 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   XSPerfAccumulate("bpu_s1_replay", s1_replay)
   XSPerfAccumulate("bpu_s2_redirect", s2_redirect)
   XSPerfAccumulate("bpu_ghist_repair", f2_correct_f1_ghist)
+  XSPerfSeqAccumulate("bpu_override", bpu_override, Seq(
+    ("total", true.B),
+    ("effective", !s2_clear),
+    ("target_redirect", s2_redirect),
+    ("ghist_repair", f2_correct_f1_ghist),
+    ("target_only", s2_redirect && !f2_correct_f1_ghist),
+    ("target_and_ghist", s2_redirect && f2_correct_f1_ghist),
+    ("direction", bpu_override_direction),
+    ("position", bpu_override_position),
+    ("target_only_change", bpu_override_target)
+  ))
   XSPerfAccumulate("bpu_train", io.fromFtq.train.valid)
   XSPerfAccumulate("bpu_train_cfi", io.fromFtq.train.valid && io.fromFtq.train.bits.cfi.valid)
   XSPerfAccumulate("bpu_train_cond", io.fromFtq.train.valid &&
     io.fromFtq.train.bits.cfi.valid && io.fromFtq.train.bits.cfi.attribute.isConditional)
   XSPerfAccumulate("bpu_train_mispred", io.fromFtq.train.valid &&
     io.fromFtq.train.bits.cfi.valid && io.fromFtq.train.bits.cfi.mispredict)
+
+  val predictionTraceRecord = Wire(new BpuPredictionTrace)
+  predictionTraceRecord.startPc := s2_pc
+  predictionTraceRecord.f1Taken := s2_s1_prediction.bits.taken
+  predictionTraceRecord.f1Position := s2_s1_prediction.bits.cfiPosition
+  predictionTraceRecord.f2Taken := s2_prediction.taken
+  predictionTraceRecord.f2Position := s2_prediction.cfiPosition
+  predictionTraceRecord.f2Target := s2_prediction.target
+  predictionTraceRecord.s2Redirect := s2_redirect
+  predictionTraceRecord.ghistRepair := f2_correct_f1_ghist
+  predictionTrace.log(predictionTraceRecord, s2_fire && !s2_clear, "bpu-f2")(clock, reset)
+
+  val trainTraceRecord = Wire(new BpuTrainTrace)
+  trainTraceRecord.startPc := io.fromFtq.train.bits.startPc
+  trainTraceRecord.cfiValid := io.fromFtq.train.bits.cfi.valid
+  trainTraceRecord.cfiPosition := io.fromFtq.train.bits.cfi.position
+  trainTraceRecord.actualTaken := io.fromFtq.train.bits.cfi.taken
+  trainTraceRecord.mispredict := io.fromFtq.train.bits.cfi.mispredict
+  trainTraceRecord.attribute := io.fromFtq.train.bits.cfi.attribute.asUInt
+  trainTrace.log(trainTraceRecord, io.fromFtq.train.valid, "ftq-train")(clock, reset)
 
   // We don't care about meta from the f1 and f2 resps
   // Use the meta from the latest resp

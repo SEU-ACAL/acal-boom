@@ -102,7 +102,7 @@ class FetchBuffer(implicit p: Parameters) extends BoomModule
     if (i == 0) {
       when (io.enq.bits.edge_inst) {
         in_uops(i).debug_pc  := fetchAlign(io.enq.bits.pc)  - 2.U
-        in_uops(i).pc_lob    := fetchAlign(io.enq.bits.pc) //这个之后会处理，这里只需要和输入pc一致就可以
+        in_uops(i).pc_lob    := pc //这个之后会处理，这里只需要和输入pc一致就可以
         in_uops(i).edge_inst := true.B
       }
     }

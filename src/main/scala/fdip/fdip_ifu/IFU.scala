@@ -27,6 +27,7 @@ import freechips.rocketchip.util.property._
 import boom.fdip.common._
 import boom.fdip.exu.{CommitExceptionSignals, BranchDecode, BrUpdateInfo, BranchDecodeSignals}
 import boom.fdip.util._
+import boom.perf._
 
 
 
@@ -372,6 +373,17 @@ class BoomIFU(implicit p: Parameters) extends BoomModule()(p)
   io.toFtq.redirect_cfi_idx                               := f3_cfiPosition
 
   io.toFtq.redirect_btb                                   := f3_valid&&f3_btb_repair
+
+  // Attribute front-end resteers at the PreChecker boundary, where the
+  // original fault classification is still available.
+  XSPerfSeqAccumulate("ifu_redirect", io.toFtq.redirect_from_fetch, Seq(
+    ("total", true.B),
+    ("jal", f3_redirect_type === jal_fault),
+    ("return", f3_redirect_type === ret_fault),
+    ("target", f3_redirect_type === target_fault),
+    ("notcfi", f3_redirect_type === notcfi_fault),
+    ("notvalid", f3_redirect_type === notvalid_fault)
+  ))
   io.toFtq.predecode_infos := DontCare
   io.toFtq.predecode_infos.valid                          := f3_valid && !f3_flush
   io.toFtq.predecode_infos.bits.br_infos.cfiPosition.valid    := f3_valid && f3_cfi_valid
