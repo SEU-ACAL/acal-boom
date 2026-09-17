@@ -23,6 +23,7 @@ class TageTableReadReq(params: BoomTageParams = BoomTageParams())(implicit p: Pa
 
 class TageTableReadResp(params: BoomTageParams = BoomTageParams())(implicit p: Parameters)
   extends TageBundle()(p) {
+  val valid = Bool()
   val ctr = UInt(3.W)
   val tag = UInt(params.tagBits.W)
   val u   = UInt(2.W)

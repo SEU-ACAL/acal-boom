@@ -41,6 +41,7 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
   val readUsefulResp = usefulCnt.read(io.readReq.bits.setIdx, io.readReq.valid)
 
   io.readResp.valid    := RegNext(io.readReq.valid)
+  io.readResp.bits.valid := readEntryResp.valid
   io.readResp.bits.ctr := readEntryResp.ctr
   io.readResp.bits.tag := readEntryResp.tag
   io.readResp.bits.u   := readUsefulResp
@@ -153,7 +154,7 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
 	s2_results.zipWithIndex.foreach { case (branch, i) =>
 		val position =  branch.bits.cfiPosition
 		val hitMask = VecInit(s2_tageResults.zipWithIndex.map{case(res,idx)=>
-			res.valid && res.bits.tag === s2_tag(i)(idx)
+			res.valid && res.bits.tag === s2_tag(i)(idx) && res.bits.valid
 		})
     val hasProvider = hitMask.reduce(_||_)
     val providerOH = PriorityEncoderOH(hitMask.reverse).reverse
@@ -171,7 +172,7 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
     val altOrBasePred = Mux(hasAlt, altEntry.ctr(2), branch.bits.taken)
 
     val preAllocTableMask = WireInit(VecInit(s2_tageResults.zipWithIndex.map{case(res,idx)=>
-      (!res.valid || res.bits.u === 0.U && (res.bits.ctr === 3.U || res.bits.ctr === 4.U)) && (idx.U > providerIdx) 
+      (!res.bits.valid || res.bits.u === 0.U && (res.bits.ctr === 3.U || res.bits.ctr === 4.U)) && (idx.U > providerIdx)
     }))
     io.tage_pred.taken(i).valid := useProvider || hasAlt
     io.tage_pred.taken(i).bits := Mux(useProvider, providerTaken, altEntry.ctr(2))
@@ -346,17 +347,17 @@ Train Stage
     XSPerfAccumulate("tage_train_cfi", t0_valid && t0_cfi.valid)
     XSPerfAccumulate("tage_train_cond", t0_valid && t0_cfi.valid && t0_cfi.attribute.isConditional)
     XSPerfAccumulate("tage_train_mispred", t0_valid && t0_cfi.valid && t0_cfi.mispredict)
-    XSPerfAccumulate("tage_provider_hit", PopCount(t0_tageMeta.provider.map(_.valid)))
-    XSPerfAccumulate("tage_provider_longest", t0_providerIsLongest)
-    XSPerfAccumulate("tage_allocate_req", t0_needAllocate)
-    XSPerfAccumulate("tage_allocate_do", t0_needAllocate && t0_canAllocate)
-    XSPerfAccumulate("tage_provider_ctr_update", PopCount(t0_providerUpdateNeed))
-    XSPerfAccumulate("tage_provider_u_update", PopCount(t0_providerUpdateUseful))
-    XSPerfAccumulate("tage_provider_hit_entries", PopCount(t0_hitBtbVec.flatten))
-    XSPerfAccumulate("tage_u_candidate_provider", PopCount(t0_providerUpdateInfo.flatMap(_._6)))
-    XSPerfAccumulate("tage_u_candidate_btb_cond", PopCount(t0_providerUpdateInfo.flatMap(_._7)))
-    XSPerfAccumulate("tage_u_candidate_position", PopCount(t0_providerUpdateInfo.flatMap(_._8)))
-    XSPerfAccumulate("tage_u_candidate_alt_differs", PopCount(t0_providerUpdateInfo.flatMap(_._9)))
-    XSPerfAccumulate("tage_u_candidate_correct", PopCount(t0_providerUpdateInfo.flatMap(_._10)))
-    XSPerfAccumulate("tage_u_candidate_not_saturated", PopCount(t0_providerUpdateInfo.flatMap(_._11)))
+    XSPerfAccumulate("tage_provider_hit", Mux(t0_valid, PopCount(t0_tageMeta.provider.map(_.valid)), 0.U))
+    XSPerfAccumulate("tage_provider_longest", t0_valid && t0_providerIsLongest)
+    XSPerfAccumulate("tage_allocate_req", t0_valid && t0_needAllocate)
+    XSPerfAccumulate("tage_allocate_do", t0_valid && t0_needAllocate && t0_canAllocate)
+    XSPerfAccumulate("tage_provider_ctr_update", Mux(t0_valid, PopCount(t0_providerUpdateNeed), 0.U))
+    XSPerfAccumulate("tage_provider_u_update", Mux(t0_valid, PopCount(t0_providerUpdateUseful), 0.U))
+    XSPerfAccumulate("tage_provider_hit_entries", Mux(t0_valid, PopCount(t0_hitBtbVec.flatten), 0.U))
+    XSPerfAccumulate("tage_u_candidate_provider", Mux(t0_valid, PopCount(t0_providerUpdateInfo.flatMap(_._6)), 0.U))
+    XSPerfAccumulate("tage_u_candidate_btb_cond", Mux(t0_valid, PopCount(t0_providerUpdateInfo.flatMap(_._7)), 0.U))
+    XSPerfAccumulate("tage_u_candidate_position", Mux(t0_valid, PopCount(t0_providerUpdateInfo.flatMap(_._8)), 0.U))
+    XSPerfAccumulate("tage_u_candidate_alt_differs", Mux(t0_valid, PopCount(t0_providerUpdateInfo.flatMap(_._9)), 0.U))
+    XSPerfAccumulate("tage_u_candidate_correct", Mux(t0_valid, PopCount(t0_providerUpdateInfo.flatMap(_._10)), 0.U))
+    XSPerfAccumulate("tage_u_candidate_not_saturated", Mux(t0_valid, PopCount(t0_providerUpdateInfo.flatMap(_._11)), 0.U))
 }
