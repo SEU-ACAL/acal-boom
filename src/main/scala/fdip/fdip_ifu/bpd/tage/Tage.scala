@@ -232,6 +232,7 @@ Train Stage
         t0_cfi.mispredict && (btb.bits.position === t0_cfi.position)
       mispredHit
     }
+    // which BTB entry is the provider of the mispredicted branch, if any
     val t0_mispredHitTableMetaIdx = PriorityEncoder(t0_mispredHitTableMask)
     val t0_mispredHitTableMeta = t0_tageMeta.provider(t0_mispredHitTableMetaIdx)
     val t0_mispredHasProvider = t0_mispredHitTableMask.reduce(_||_) && t0_mispredHitTableMeta.valid
@@ -239,8 +240,12 @@ Train Stage
     val t0_providerIsLongest = t0_mispredHasProvider && (t0_mispredHitTableMeta.bits === (TageTables - 1).U)
     //TODO:allocate 算法可以优化
     val t0_needAllocate = t0_cfi.valid && t0_cfi.attribute.isConditional && t0_cfi.mispredict && !t0_providerIsLongest 
-    val t0_canAllocate = t0_tageMeta.allocate(t0_cfi.position).valid || !t0_mispredHitTableMask.reduce(_||_)
-    val t0_allocateTableIdx = Mux(t0_mispredHitTableMask.reduce(_||_), t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).bits, 0.U)
+    val t0_canAllocate = t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).valid || !t0_mispredHitTableMask.reduce(_||_)
+    //TODO：use LSFR 来随机选择表
+    val t0_allocateTableIdx = Mux(
+      t0_mispredHitTableMask.reduce(_||_) && t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).valid,
+      PriorityEncoder(t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).bits),
+      0.U)
 
     /* 
     CTR taken 111 和NT 000都不更新
