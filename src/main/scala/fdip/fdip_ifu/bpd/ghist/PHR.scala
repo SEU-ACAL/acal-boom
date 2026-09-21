@@ -1,4 +1,4 @@
-package boom.fdip.ifu
+package boom.fdip.ifu.bpd
 
 import chisel3._
 import chisel3.util._
@@ -16,21 +16,27 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
         val s0_fire = Input(Bool())
         val s1_fire = Input(Bool())
         val s2_fire = Input(Bool())
+
         val s1Train = Input(new PhrS1Train)
         val phrMeta = Output(new PhrMeta)
         val train = Input(new PhrTrain)
-
         // val s1_foldPhr
     })
     val phr = RegInit(0.U(PHRWidth.W))
     val ptr = RegInit(0.U.asTypeOf(new PhrPtr(PHRWidth)))
-
+    def readLogical(ptr: PhrPtr): UInt = {
+        (Cat(phr, phr) >> (ptr.value + 1.U))(PHRWidth - 1, 0)
+    }
     val s0_ptr = Wire(new PhrPtr(PHRWidth))
+    val s0_fire = io.s0_fire
+    val s1_fire = io.s1_fire
+    val s2_fire = io.s2_fire
 
 
     val s1_valid = io.s1Train.valid
     val s1_Data = Wire(new PhrUpdate)
     val s1_ptr = RegEnable(s0_ptr, s0_fire)
+    val s1_phrValue = readLogical(s1_ptr)
     s1_Data.valid := s1_valid
     s1_Data.cifPc := io.s1Train.cfiPc
     s1_Data.phrMeta := io.phrMeta
@@ -40,7 +46,7 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     val s1_shiftBits = s1_component._1
     val s1_hashHighBits = s1_component._2
     val s1_update = getUpdatePtrs(s1_Data,s1_hashHighBits)
-    val s1_phrLowBits = phr(PHRHashHighWidth-1,0)
+    val s1_phrLowBits = s1_phrValue(PHRHashHighWidth-1,0)
 
     val s2_override = io.train.s2.valid
     val s2_component = getPathHashComponents(io.train.s2.cifPc, io.train.s2.prediction.target)
@@ -58,7 +64,15 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     val redirect_component = getPathHashComponents(io.train.redirect.bits.cfiPc, io.train.redirect.bits.target)
     val redirect_shiftBits = redirect_component._1
     val redirect_hashHighBits = redirect_component._2
-    val redirect_update = getUpdatePtrs(io.train.redirect.bits,redirect_hashHighBits)
+    val redirect_data = Wire(new PhrUpdate)
+    redirect_data.valid := redirect
+    redirect_data.cifPc := io.train.redirect.bits.cfiPc
+    redirect_data.phrMeta := io.train.redirect.bits.meta
+    redirect_data.prediction := DontCare // 其他字段不care
+    redirect_data.prediction.taken := io.train.redirect.bits.taken
+    redirect_data.prediction.target := io.train.redirect.bits.target
+
+    val redirect_update = getUpdatePtrs(redirect_data,redirect_hashHighBits)
 
     val phrWriteValid = io.train.s2.valid || io.train.redirect.valid || io.s1Train.valid
     val phrWriteTaken = MuxCase(
@@ -71,16 +85,16 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     val phrWriteBits  = MuxCase(
         0.U,
         Seq(
-        io.train.redirect.valid -> Cat(redirect_shiftBits, redirect_hashHighBits),
-        io.train.s2.valid -> Cat(s2_shiftBits, s2_hashHighBits),
-        io.s1Train.valid -> Cat(s1_shiftBits, s1_hashHighBits)
+        io.train.redirect.valid -> Cat(redirect_hashHighBits, redirect_shiftBits),
+        io.train.s2.valid -> Cat(s2_hashHighBits, s2_shiftBits),
+        io.s1Train.valid -> Cat(s1_hashHighBits, s1_shiftBits)
     ))
     val phrWriteLowBits = MuxCase(
         0.U,
         Seq(
-            io.train.redirect.valid -> redirect_hashHighBits,
-            io.train.s2.valid -> s2_hashHighBits,
-            io.s1Train.valid -> s1_hashHighBits
+            io.train.redirect.valid -> redirect_update.phrLowBits,
+            io.train.s2.valid -> s2_update.phrLowBits,
+            io.s1Train.valid -> s1_update.phrLowBits
         ))
     val phrWritePtr = MuxCase(
         ptr,
@@ -121,11 +135,11 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     when(phrWriteValid){
         when(phrWriteTaken){
             for(i <- 0 until PHRHashWidth){
-                phr(phrWritePtr.value + (i+1).U) := phrWriteBits(i)
+                phr((phrWritePtr + (i+1).U).value) := phrWriteBits(i)
             }
         }.otherwise{
             for(i <- 1 to PHRHashHighWidth){
-                phr(phrWritePtr.value + i.U) := phrWriteLowBits(i-1)
+                phr((phrWritePtr + i.U).value) := phrWriteLowBits(i-1)
             }
         }
     }
