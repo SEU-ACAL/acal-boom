@@ -434,11 +434,6 @@ val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
     io.ifu.redirect_flush := true.B
     val flush_typ = RegNext(rob.io.flush.bits.flush_typ)
     // Clear the global history when we flush the ROB (exceptions, AMOs, unique instructions, etc.)
-    // TODO： fix ghist and ras
-    val new_ghist = WireInit((0.U).asTypeOf(new GlobalHistory))
-    // new_ghist.current_saw_branch_not_taken := true.B
-    // new_ghist.ras_idx := io.ifu.get_pc(0).entry.ras_idx
-    io.ifu.redirect_ghist := new_ghist
     when (FlushTypes.useCsrEvec(flush_typ)) {
       io.ifu.redirect_pc  := Mux(flush_typ === FlushTypes.eret,
                                  RegNext(RegNext(csr.io.evec)),
@@ -467,19 +462,11 @@ val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
     io.ifu.redirect_pc      := mispredict_target
     io.ifu.redirect_flush   := true.B
     io.ifu.redirect_ftq_idx := brupdate.b2.uop.ftq_idx
-    val use_same_ghist = (brupdate.b2.cfi_type === CFI_BR &&
-                          !brupdate.b2.taken &&
-                          bankAlign(block_pc) === bankAlign(npc))
+
     val ftq_entry = io.ifu.get_pc(1).entry
     val cfi_idx = brupdate.b2.uop.pc_lob 
-    val ftq_ghist = io.ifu.get_pc(1).ghist
-    //TODO: fix ghist and ras
-    val next_ghist = ftq_ghist
 
-    io.ifu.redirect_ghist   := Mux(
-      use_same_ghist,
-      ftq_ghist,
-      next_ghist)
+
   } .elsewhen (rob.io.flush_frontend || brupdate.b1.mispredict_mask =/= 0.U) {
     io.ifu.redirect_flush   := true.B
   }
@@ -1398,19 +1385,12 @@ val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
       }
     }
   } else if (BRANCH_PRINTF) {
-    val debug_ghist = RegInit(0.U(globalHistoryLength.W))
-    when (rob.io.flush.valid && FlushTypes.useCsrEvec(rob.io.flush.bits.flush_typ)) {
-      debug_ghist := 0.U
-    }
 
-    var new_ghist = debug_ghist
+
 
     for (w <- 0 until coreWidth) {
       when (rob.io.commit.arch_valids(w) &&
         (rob.io.commit.uops(w).is_br || rob.io.commit.uops(w).is_jal || rob.io.commit.uops(w).is_jalr)) {
-        // for (i <- 0 until globalHistoryLength) {
-        //   printf("%x", new_ghist(globalHistoryLength-i-1))
-        // }
         // printf("\n")
         printf("%x %x %x %x %x %x\n",
           rob.io.commit.uops(w).debug_fsrc, rob.io.commit.uops(w).taken,
@@ -1418,11 +1398,8 @@ val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
           rob.io.commit.uops(w).is_jalr, Sext(rob.io.commit.uops(w).debug_pc(vaddrBits-1,0), xLen))
 
       }
-      new_ghist = Mux(rob.io.commit.arch_valids(w) && rob.io.commit.uops(w).is_br,
-        Mux(rob.io.commit.uops(w).taken, new_ghist << 1 | 1.U(1.W), new_ghist << 1),
-        new_ghist)
+
     }
-    debug_ghist := new_ghist
   }
 
   // TODO: Does anyone want this debugging functionality?

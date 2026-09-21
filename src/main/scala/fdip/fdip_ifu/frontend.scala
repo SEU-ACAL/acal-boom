@@ -159,18 +159,7 @@ object BranchAttribute {
     BitPat("b????????????????_???_?????_1100011")       -> List(BranchType.Conditional)
   )
 }
-class FrontendResp(implicit p: Parameters) extends BoomBundle()(p) {
-  val pc = UInt(vaddrBitsExtended.W)  // ID stage PC
-  val data = UInt((fetchWidth * coreInstBits).W)
-  val mask = UInt(fetchWidth.W)
-  val xcpt = new FrontendExceptions
-  val ghist = new GlobalHistory
 
-  // fsrc provides the prediction FROM a branch in this packet
-  // tsrc provides the prediction TO this packet
-  val fsrc = UInt(BSRC_SZ.W)
-  val tsrc = UInt(BSRC_SZ.W)
-}
 
 
 /**
@@ -280,8 +269,6 @@ class FetchBundle(implicit p: Parameters) extends BoomBundle
 
   val br_mask       = UInt(fetchWidth.W)
 
-  // val ghist         = new GlobalHistory
-  // val lhist         = Vec(nBanks, UInt(localHistoryLength.W))
 
   val xcpt_pf_if    = Bool() // I-TLB miss (instruction fetch fault).
   val xcpt_ae_if    = Bool() // Access exception.
@@ -321,7 +308,6 @@ class BoomFrontendIO(implicit p: Parameters) extends BoomBundle
   val redirect_val     = Output(Bool()) // Redirect the frontend?
   val redirect_pc      = Output(UInt()) // Where do we redirect to?
   val redirect_ftq_idx = Output(UInt()) // Which ftq entry should we reset to?
-  val redirect_ghist   = Output(new GlobalHistory) // What are we setting as the global history?
 
   val commit = Valid(UInt((log2Ceil(ftqSz)+1).W))
 

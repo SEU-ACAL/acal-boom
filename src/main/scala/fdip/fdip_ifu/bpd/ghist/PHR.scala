@@ -10,6 +10,7 @@ PHR 需要考虑：
 1. 算法
 2. 如何更新
 3. 如何重定向
+4. 是否需要维护Fold PHR的状态，如果PHR时序紧张，面积紧张 需要使用fold PHR
 */
 class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     val io = IO(new Bundle{
@@ -19,7 +20,10 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
 
         val s1Train = Input(new PhrS1Train)
         val phrMeta = Output(new PhrMeta)
-        val train = Input(new PhrTrain)
+        val train   = Input(new PhrTrain)
+        val s0_phr = Output(UInt(PHRWidth.W))
+        
+        val train_phr = Output(UInt(PHRWidth.W))
         // val s1_foldPhr
     })
     val phr = RegInit(0.U(PHRWidth.W))
@@ -31,7 +35,8 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     val s0_fire = io.s0_fire
     val s1_fire = io.s1_fire
     val s2_fire = io.s2_fire
-
+    val s0_phrValue = readLogical(s0_ptr)
+    io.s0_phr := s0_phrValue
 
     val s1_valid = io.s1Train.valid
     val s1_Data = Wire(new PhrUpdate)
@@ -39,8 +44,9 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     val s1_phrValue = readLogical(s1_ptr)
     s1_Data.valid := s1_valid
     s1_Data.cifPc := io.s1Train.cfiPc
-    s1_Data.phrMeta := io.phrMeta
-    s1_Data.prediction := io.s1Train.prediction
+    s1_Data.prediction := dontCare
+    s1_Data.prediction.taken := io.s1Train.prediction.taken
+    s1_Data.prediction.target := io.s1Train.prediction.target
 
     val s1_component = getPathHashComponents(io.s1Train.cfiPc, io.s1Train.target)
     val s1_shiftBits = s1_component._1
@@ -146,4 +152,21 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
 
     io.phrMeta.ptr := s1_ptr
     io.phrMeta.phrLowBits := s1_phrLowBits
+
+
+    val bpuTrainTaken = io.train.bpuTrain.valid && io.train.bpuTrain.bits.bpuTraincfi.taken
+    val bpuTrainData = Wire(new PhrUpdate)
+    bpuTrainData.valid := io.train.bpuTrain.valid
+    bpuTrainData.cifPc := io.train.bpuTrain.bits.bpuTraincfi.cfiPc
+    bpuTrainData.phrMeta := io.train.bpuTrain.bits.bpuTrainPhrMeta
+    bpuTrainData.prediction := DontCare // 其他字段不care
+    bpuTrainData.prediction.taken := io.train.bpuTrain.bits.bpuTraincfi.taken
+    bpuTrainData.prediction.target := io.train.bpuTrain.bits.bpuTraincfi.target
+    val bpuTrain_component = getPathHashComponents(io.train.bpuTrain.bits.bpuTraincfi.cfiPc, io.train.bpuTrain.bits.bpuTraincfi.target)
+    val bpuTrain_shiftBits = bpuTrain_component._1
+    val bpuTrain_hashHighBits = bpuTrain_component._2
+    val bpuTrain_update = getUpdatePtrs(bpuTrainData,bpuTrain_hashHighBits)
+    val bpuPhrValue = readLogical(bpuTrain_update.ptr)
+
+    io.train_phr := bpuPhrValue
 }

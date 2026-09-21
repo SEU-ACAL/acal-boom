@@ -197,7 +197,7 @@ Train Stage
   val t0_br_mask = io.train.bits.brMask
   val t0_cfi = io.train.bits.cfi
   val t0_pc = io.train.bits.startPc
-  val t0_ghist = io.train.bits.ghist
+  val t0_ghist = io.train.bits.phr
   val t0_idx = fetchIdx(t0_pc)
   
   // val t0_providerOH = t0_tageMeta.provider(t0_cfi.position)

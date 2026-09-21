@@ -57,7 +57,20 @@ class Train(implicit p: Parameters) extends BoomBundle()(p)
 {
   val startPc  = UInt(vaddrBitsExtended.W)
 
-  val ghist   = new GlobalHistory
+  val phrMeta   = new PhrMeta
+  val brMask  = UInt(predWidth.W)
+  val cfi     = new ResolvedCfi
+  val btbMeta = Vec(l1btbParameters.nWays,
+    Valid(new boom.fdip.ifu.bpd.l1btb.BTBPredictMeta()))
+  val tageMeta = new boom.fdip.ifu.bpd.tage.TagePredictMeta(BoomTageParams().tableInfo.size)
+}
+
+class BpuTrain(implicit p: Parameters) extends BoomBundle()(p)
+  with HasBpdParameters
+{
+  val startPc  = UInt(vaddrBitsExtended.W)
+
+  val phr   = UInt(globalHistoryLength.W)
   val brMask  = UInt(predWidth.W)
   val cfi     = new ResolvedCfi
   val btbMeta = Vec(l1btbParameters.nWays,
@@ -79,7 +92,7 @@ class BranchPredictionLiteBundle(implicit p: Parameters) extends BoomBundle()(p)
   val valid       = Bool()
   val hasRedirect = Bool()
   val ftq_idx     = UInt((log2Ceil(ftqSz) + 1).W)
-  val ghist       = new GlobalHistory
+  val phrMeta       = new PhrMeta
   val pred        = new Prediction
   val meta        = Output(new BranchPredictionMeta)
   val rasState    = new RasState
@@ -88,21 +101,6 @@ class BranchPredictionLiteBundle(implicit p: Parameters) extends BoomBundle()(p)
 
 
 
-  //TODO: fix it
-  def predGhist = {
-    // val takenIdx = PriorityEncoder(predTakenVec)
-    // val isBr = WireInit(VecInit(preds.map(p => p.is_br && p.predicted_pc.valid)))
-    // // ghist.update(
-    // //   isBr.asUInt & fetchMask(pc),
-    // //   preds(takenIdx).taken && predTakenVec.reduce(_ || _),
-    // //   preds(takenIdx).is_br,
-    // //   takenIdx,
-    // //   predTakenVec.reduce(_ || _),
-    // //   pc,
-    // //   false.B,
-    // //   false.B)
-    ghist
-  }
 
 }
 

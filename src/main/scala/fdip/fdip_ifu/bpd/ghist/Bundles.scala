@@ -48,10 +48,15 @@ class PhrUpdateResult(implicit p: Parameters) extends PHRBundle()(p) with HasBpd
   val ptr        = new PhrPtr(PHRWidth)
   val phrLowBits = UInt(PHRHashHighWidth.W)
 }
-
+class BpuTrainPhrInfo(implicit p: Parameters) extends PHRBundle()(p) with HasBpdParameters {
+  val bpuTrainPhrMeta   = new PhrMeta
+  val bpuTraincfi       = new ResolvedCfi
+}
 class PhrTrain(implicit p: Parameters) extends PHRBundle()(p) with HasBpdParameters {
 
   val s2 = new PhrUpdate
   val redirect = Valid(new BpuRedirect)
+  //only for BPU train 
+  val bpuTrain = Valid(new BpuTrainPhrInfo)
 
 }

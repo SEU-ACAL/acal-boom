@@ -67,25 +67,24 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   val btb      = Module(new L1BTB())
   val tage     = Module(new TageBranchPredictor())
   val ras               = Module(new BoomRAS)
+  val phr               = Module(new PHR)
 //如果ftq没有空间，那么s1阶段会一直保持这个pc，并且持续预测（或者使用fire发送预测请求？）
 /* 
 由于送入bpu的是s0阶段的请求，如果s1阶段没有fire，
- */
+*/
+
   val s0_pc             = WireInit(io.reset_vector)
   val s0_valid          = WireInit(false.B)
-  val s0_ghist          = WireInit((0.U).asTypeOf(new GlobalHistory))
+  val s0_phr            = phr.io.s0_phr
   val s0_rasState       = WireInit((0.U).asTypeOf(new RasState))
   val bpdF0Valid = s0_valid
   val bpdF0Pc    = s0_pc
-  val bpdF1Ghist = RegNext(s0_ghist.histories)
 
   val s0_fire, s1_fire, s2_fire, s3_fire = WireInit(false.B)
   //由于s1阶段可能由于ftq full导致预测信息无法写入，此时需要去replay pc和ghist
   val s1_replay          = WireInit(false.B)
   
   val s1_ready, s2_ready, s3_ready = WireInit(false.B)
-  dontTouch(s0_valid)
-  dontTouch(s0_ghist)
 
   // val s1_target         = Wire(UInt(vaddrBitsExtended.W))
 
@@ -100,41 +99,49 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   microBtb.io.f0_pc    := bpdF0Pc
 
   val s1_prediction = microBtb.io.resp
-
+  val s1_phrMeta = phr.io.phrMeta
   val s1_pc             = RegEnable(s0_pc,s0_fire)
   val s1_clear          = WireInit(false.B)
   val s1_valid          = RegInit(false.B)
-  val s1_ghist          = RegEnable(s0_ghist,0.U.asTypeOf(new GlobalHistory),s0_fire)
+
   val s1_rasState       = RegEnable(s0_rasState,s0_fire)
-  //目前s1级只有一个分支预测结果，后续需要扩展为多个分支预测结果
-  val s1_predGhist      = s1_ghist.update(1.U, s1_prediction.bits.taken,s1_fire && s1_prediction.valid && s1_prediction.bits.attribute.isConditional, s1_fire && s1_prediction.valid && s1_prediction.bits.attribute.isConditional)
+ 
 
   val s1_finalPrediction = WireInit(s1_prediction)
+  val bpuTrain = Wire(Valid(new BpuTrain))
+  bpuTrain.valid := io.fromFtq.train.valid
+  bpuTrain.bits.startPc := io.fromFtq.train.bits.startPc
+  bpuTrain.bits.phr := phr.io.train_phr
+  bpuTrain.bits.cfi := io.fromFtq.train.bits.cfi
+  bpuTrain.bits.brMask := io.fromFtq.train.bits.brMask
+  bpuTrain.bits.btbMeta := io.fromFtq.train.bits.btbMeta
+  bpuTrain.bits.tageMeta := io.fromFtq.train.bits.tageMeta
+
   s1_finalPrediction.bits.target  := Mux(s1_prediction.valid, s1_prediction.bits.target, nextFetch(s1_pc))
   btb.io.f0_valid := bpdF0Valid
   btb.io.f0_pc    := bpdF0Pc
-  btb.io.train    := io.fromFtq.train
+  btb.io.train    := bpuTrain
 
   tage.io.s0_valid := bpdF0Valid
   tage.io.s0_pc    := bpdF0Pc
-  tage.io.s0_ghist := s0_ghist.histories
-  tage.io.train    := io.fromFtq.train
+  tage.io.s0_ghist := s0_phr(globalHistoryLength-1,0)
+  tage.io.train    := bpuTrain
   tage.io.fromBtb.results := btb.io.resp
   tage.io.fromBtb.s1_position := btb.io.s1_position
 
   val s2_s1_prediction  = RegEnable(s1_finalPrediction,s1_fire)
-  val s2_s1_predGhist   = RegEnable(s1_predGhist,s1_fire)
+  val s2_phrMeta         = RegEnable(s1_phrMeta,s1_fire)
   val s2_pc             = RegEnable(s1_pc,s1_fire)
   val s2_alignPc        = fetchAlign(s2_pc)
-  val s2_valid          = RegInit(false.B)//RegEnable(s1_valid,false.B,io.toFtq.resp.ready&&(!s1_clear))
+  val s2_valid          = RegInit(false.B)
   val s2_redirect       = WireInit(false.B)
   val s2_clear          = WireInit(false.B)
-  val s2_ghist          = RegEnable(s1_ghist,0.U.asTypeOf(new GlobalHistory),s1_fire)
+
+
   val s2_newRasStateHold = RegInit((0.U).asTypeOf(new RasState))
   val s2_newRasStateHoldValid = RegInit(false.B)
   val s2_newRasState = Wire(new RasState)
   val s2_rasState       = RegEnable(s2_newRasState,s1_fire)
-  // val s2_target         = Wire(UInt(vaddrBitsExtended.W))
   val s2_tageResp = tage.io.tage_pred
   val s2_btbResp  = btb.io.resp
   val s2_jumpTakenVec = s2_btbResp.map{ btb=>
@@ -182,7 +189,6 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
       s2_firstTakenBranch.valid -> s2_firstTakenBranch.bits.target
     )
   )
-  //TODO: ghist update
 
   val s2_predRasState        = WireInit(s2_rasState)
   when(s2_useRas){
@@ -197,7 +203,6 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   s2_prediction.cfiPosition := s2_firstTakenBranch.bits.cfiPosition
   s2_prediction.target      := s2_target
   s2_prediction.attribute   := s2_firstTakenBranch.bits.attribute
-  val s2_predGhist = s2_ghist.update(s2_btbHitNum, s2_taken,s2_firstTakenBranch.valid && s2_firstTakenBranch.bits.attribute.isConditional, s2_fire && s2_firstTakenBranch.valid)
   val bpdMeta = Wire(new BranchPredictionMeta)
   bpdMeta.tage     := tage.io.meta
   bpdMeta.btb      := btb.io.meta
@@ -243,10 +248,9 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
 
 
   val s1_previous_pred_info    = RegNext(io.toFtq.resp.bits.f1)
-  val f2_correct_f1_ghist     = WireInit(s2_s1_predGhist =/=  s2_predGhist&& enableGHistStallRepair.B && s2_valid)
   // Keep a repaired RAS state until the stalled s1 packet can advance.  The
   // repair condition is only a pulse, while s1_valid may remain asserted.
-  val s2_rasRepair = s2_redirect || f2_correct_f1_ghist
+  val s2_rasRepair = s2_redirect
 
   val redirect_ras_repair = io.fromFtq.ras_updateInfo.valid
   val redirect_rasState = io.fromFtq.ras_updateInfo.bits.rasState
@@ -270,28 +274,17 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
     Mux(s2_newRasStateHoldValid, s2_newRasStateHold, s1_rasState))
 
   dontTouch(s1_replay)
-  dontTouch(f2_correct_f1_ghist)
   s0_pc                 := MuxCase(io.reset_vector,
   Seq(
     (RegNext(reset.asBool) && !reset.asBool) -> io.reset_vector,
     io.fromFtq.redirect_val                  -> io.fromFtq.redirect_pc,
-    (s2_redirect || f2_correct_f1_ghist)     -> io.toFtq.resp.bits.f2.pred.target,
+    (s2_redirect)     -> io.toFtq.resp.bits.f2.pred.target,
     s1_replay                                -> s1_pc,
     s1_valid           -> s1_finalPrediction.bits.target
   )
   )
   s0_valid              := (RegNext(reset.asBool) && !reset.asBool) || io.fromFtq.redirect_val ||
-                           s2_redirect || s1_valid || s1_replay || f2_correct_f1_ghist
-
-  s0_ghist              := MuxCase((0.U).asTypeOf(new GlobalHistory),
-  Seq(
-    (RegNext(reset.asBool) && !reset.asBool) -> (0.U).asTypeOf(new GlobalHistory),
-    io.fromFtq.redirect_val                  -> io.fromFtq.redirect_ghist,
-    (s2_redirect||f2_correct_f1_ghist)       -> s2_predGhist,
-    s1_replay                                -> s1_predGhist,
-    s1_valid                                 -> s1_predGhist
-  )
-  )
+                           s2_redirect || s1_valid || s1_replay 
 
   s0_rasState           := MuxCase((0.U).asTypeOf(new RasState),
   Seq(
@@ -303,14 +296,11 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   //其实这里还需要去做位置判断
   s2_redirect                 := io.toFtq.resp.bits.f2.valid&&(s1_previous_pred_info.valid)&&(s1_previous_pred_info.pred.target=/=io.toFtq.resp.bits.f2.pred.target)&&s2_valid
  
-  s1_clear                    := io.fromFtq.redirect_val || (s2_redirect||f2_correct_f1_ghist) 
+  s1_clear                    := io.fromFtq.redirect_val || (s2_redirect) 
   s2_clear                    := io.fromFtq.redirect_val
 
   io.toFtq.resp.bits.f1.hasRedirect := false.B
-  io.toFtq.resp.bits.f2.hasRedirect := (s2_redirect||f2_correct_f1_ghist) && (! s2_clear)
-  // io.toFtq.resp.bits.f3.hasRedirect := (s3_redirect||f3_correct_f2_ghist) && (! s3_clear)
-  // io.toFtq.resp.bits.f3_pred_target := s3_predTarget
-
+  io.toFtq.resp.bits.f2.hasRedirect := (s2_redirect) && (! s2_clear)
   //TODO:fix RAS
   ras.io.read_idx    := s1_rasState.idx
   ras.io.write_valid := s2_valid && useRAS.B && s2_taken && s2_firstTakenBranch.bits.attribute.isCall || redirect_ras_repair
@@ -333,18 +323,41 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
 
   io.toFtq.resp.valid         := s1_fire && (!s1_clear) 
   io.toFtq.resp.bits.f1.valid := s1_fire && (!s1_clear) 
-  io.toFtq.resp.bits.f1.ghist := s1_ghist
-
   io.toFtq.resp.bits.f1.ftq_idx:= DontCare
+  io.toFtq.resp.bits.f1.phrMeta := s1_phrMeta
   
   io.toFtq.resp.bits.f2.valid   := s2_fire && (!s2_clear)
   io.toFtq.resp.bits.f2.ftq_idx := RegNext(io.fromFtq.ftq_idx)
-  io.toFtq.resp.bits.f2.ghist   := s2_ghist
+  io.toFtq.resp.bits.f2.phrMeta := s2_phrMeta
+
+
+  phr.io.s0_fire := s0_fire
+  phr.io.s1_fire := s1_fire
+  phr.io.s2_fire := s2_fire
+
+  phr.io.s1Train.valid := s1_fire
+  phr.io.s1Train.cfiPc := fetchAlign(s1_pc) + (s1_finalPrediction.bits.cfiPosition << 1.U)
+  phr.io.s1Train.taken := s1_finalPrediction.valid
+  phr.io.s1Train.target := s1_finalPrediction.bits.target
+
+
+  phr.io.train.s2.valid := s2_fire && s2_redirect
+  phr.io.train.s2.cifPc := fetchAlign(s2_pc) + (s2_prediction.cfiPosition << 1.U)
+  phr.io.train.s2.phrMeta := s2_phrMeta
+  phr.io.train.s2.prediction := s2_prediction
+
+  phr.io.train.redirect.valid := io.fromFtq.redirect.valid
+  phr.io.train.redirect.bits := io.fromFtq.redirect.bits
+
+  phr.io.bpuTrain.valid := io.fromFtq.train.valid
+  phr.io.bpuTrain.bits.bpuTrainPhrMeta := io.fromFtq.train.bits.phrMeta
+  phr.io.bpuTrain.bits.bpuTraincfi := io.fromFtq.train.bits.cfi
+
 
   // f2 can override f1 either because its predicted next PC differs or to
   // repair speculative history. For a target redirect, classify the f1/f2
   // disagreement by direction, terminal CFI position, then target-only.
-  val bpu_override = s2_redirect || f2_correct_f1_ghist
+  val bpu_override = s2_redirect 
   val bpu_override_direction = s2_redirect &&
     (s1_previous_pred_info.pred.taken =/= s2_prediction.taken)
   val bpu_override_position = s2_redirect && !bpu_override_direction &&
@@ -359,14 +372,10 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   XSPerfAccumulate("bpu_resp", io.toFtq.resp.valid)
   XSPerfAccumulate("bpu_s1_replay", s1_replay)
   XSPerfAccumulate("bpu_s2_redirect", s2_redirect)
-  XSPerfAccumulate("bpu_ghist_repair", f2_correct_f1_ghist)
   XSPerfSeqAccumulate("bpu_override", bpu_override, Seq(
     ("total", true.B),
     ("effective", !s2_clear),
     ("target_redirect", s2_redirect),
-    ("ghist_repair", f2_correct_f1_ghist),
-    ("target_only", s2_redirect && !f2_correct_f1_ghist),
-    ("target_and_ghist", s2_redirect && f2_correct_f1_ghist),
     ("direction", bpu_override_direction),
     ("position", bpu_override_position),
     ("target_only_change", bpu_override_target)
@@ -386,7 +395,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   predictionTraceRecord.f2Position := s2_prediction.cfiPosition
   predictionTraceRecord.f2Target := s2_prediction.target
   predictionTraceRecord.s2Redirect := s2_redirect
-  predictionTraceRecord.ghistRepair := f2_correct_f1_ghist
+  predictionTraceRecord.ghistRepair := 0.U
   predictionTrace.log(predictionTraceRecord, s2_fire && !s2_clear, "bpu-f2")(clock, reset)
 
   val trainTraceRecord = Wire(new BpuTrainTrace)
@@ -402,24 +411,5 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   // Use the meta from the latest resp
   io.toFtq.resp.bits.f1.meta  := DontCare
 /* --------------------------------- update --------------------------------- */
-  // XSPerfAccumulate("f2_correct_f1_ghist",   f2_correct_f1_ghist)
-  // XSPerfAccumulate("f3_correct_f2_ghist",   f3_correct_f2_ghist)
-  // XSPerfAccumulate("f3_correct_f1_ghist",   f3_correct_f1_ghist)
 
-  val commit_ghist        = RegInit(0.U.asTypeOf(new GlobalHistory))
-  dontTouch(commit_ghist)
-  // when (io.fromFtq.bpdupdate.valid && io.fromFtq.bpdupdate.bits.is_commit_update) {
-  //   // commit_ghist := commit_ghist.update(
-  //   //   io.fromFtq.bpdupdate.bits.br_mask,
-  //   //   io.fromFtq.bpdupdate.bits.cfi_taken,
-  //   //   io.fromFtq.bpdupdate.bits.cfi_is_br,
-  //   //   io.fromFtq.bpdupdate.bits.cfi_idx.bits,
-  //   //   io.fromFtq.bpdupdate.bits.cfi_idx.valid,
-  //   //   fetchAlign(io.fromFtq.bpdupdate.bits.pc),
-  //   //   io.fromFtq.bpdupdate.bits.cfi_is_call,
-  //   //   io.fromFtq.bpdupdate.bits.cfi_is_ret
-  //   // )
-  //   // assert(commit_ghist.histories === io.fromFtq.bpdupdate.bits.ghist.histories,
-  //   //   "Branch Predictor Commit Update GHist does not match the expected value!")
-  // }
 }
