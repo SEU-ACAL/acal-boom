@@ -81,4 +81,22 @@ trait PhrHelpers extends HasPhrParameters {
     bitsetsXor(foldedWidth,
       Seq((0 until hashWidth).map(i => (i % foldedWidth, hash(i)))))
   }
+
+  /**
+    * Restore the PHR state belonging to a prediction and apply its final
+    * taken-CFI result. Not-taken updates deliberately leave the snapshot
+    * unchanged so an override can remove an earlier speculative insertion.
+    */
+  def getUpdatePtrs(data: PhrUpdate, hashHigh: UInt): PhrUpdateResult = {
+    require(hashHigh.getWidth == PHRHashHighWidth,
+      s"hash high width ${hashHigh.getWidth} does not match $PHRHashHighWidth")
+    val result = WireInit(0.U.asTypeOf(new PhrUpdateResult))
+    result.ptr := data.phrMeta.ptr
+    result.phrLowBits := data.phrMeta.phrLowBits
+    when (data.valid && data.prediction.taken) {
+      result.ptr := data.phrMeta.ptr.dec(PHRShamt)
+      result.phrLowBits := data.phrMeta.phrLowBits ^ hashHigh
+    }
+    result
+  }
 }
