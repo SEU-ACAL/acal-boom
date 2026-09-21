@@ -10,11 +10,12 @@ PHR 需要考虑：
 1. 算法
 2. 如何更新
 3. 如何重定向
-4. 如何
 */
 class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     val io = IO(new Bundle{
-
+        val s0_fire = Input(Bool())
+        val s1_fire = Input(Bool())
+        val s2_fire = Input(Bool())
         val s1Train = Input(new PhrS1Train)
         val phrMeta = Output(new PhrMeta)
         val train = Input(new PhrTrain)
@@ -24,21 +25,40 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     val phr = RegInit(0.U(PHRWidth.W))
     val ptr = RegInit(0.U.asTypeOf(new PhrPtr(PHRWidth)))
 
+    val s0_ptr = Wire(new PhrPtr(PHRWidth))
+
+
     val s1_valid = io.s1Train.valid
+    val s1_Data = Wire(new PhrUpdate)
+    val s1_ptr = RegEnable(s0_ptr, s0_fire)
+    s1_Data.valid := s1_valid
+    s1_Data.cifPc := io.s1Train.cfiPc
+    s1_Data.phrMeta := io.phrMeta
+    s1_Data.prediction := io.s1Train.prediction
+
     val s1_component = getPathHashComponents(io.s1Train.cfiPc, io.s1Train.target)
     val s1_shiftBits = s1_component._1
     val s1_hashHighBits = s1_component._2
-    val s1_update
+    val s1_update = getUpdatePtrs(s1_Data,s1_hashHighBits)
+    val s1_phrLowBits = phr(PHRHashHighWidth-1,0)
 
     val s2_override = io.train.s2.valid
     val s2_component = getPathHashComponents(io.train.s2.cifPc, io.train.s2.prediction.target)
     val s2_shiftBits = s2_component._1
     val s2_hashHighBits = s2_component._2
+    val s2_Data = Wire(new PhrUpdate)
+    s2_Data.valid := s2_override
+    s2_Data.cifPc := io.train.s2.cifPc
+    s2_Data.phrMeta := io.train.s2.phrMeta
+    s2_Data.prediction := io.train.s2.prediction
+    val s2_update = getUpdatePtrs(s2_Data,s2_hashHighBits)
+
 
     val redirect = io.train.redirect.valid
     val redirect_component = getPathHashComponents(io.train.redirect.bits.cfiPc, io.train.redirect.bits.target)
     val redirect_shiftBits = redirect_component._1
     val redirect_hashHighBits = redirect_component._2
+    val redirect_update = getUpdatePtrs(io.train.redirect.bits,redirect_hashHighBits)
 
     val phrWriteValid = io.train.s2.valid || io.train.redirect.valid || io.s1Train.valid
     val phrWriteTaken = MuxCase(
@@ -65,19 +85,28 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     val phrWritePtr = MuxCase(
         ptr,
         Seq(
-            io.train.redirect.valid -> io.train.redirect.bits.phrMeta.ptr,
-            io.train.s2.valid -> io.train.s2.phrMeta.ptr,
-            io.s1Train.valid -> io.s1Train.phrMeta.ptr //TODO: fix this
+            io.train.redirect.valid -> redirect_update.ptr,
+            io.train.s2.valid -> s2_update.ptr,
+            io.s1Train.valid -> s1_update.ptr
         )
     )
-
-
     ptr := MuxCase(
         ptr,
         Seq(
-            io.train.redirect.valid -> io.train.redirect.bits.meta.ptr,
-            io.train.s2.valid -> io.train.s2.phrMeta.ptr,
-            io.s1Train.valid -> Mux(io.s1Train.taken, ptr - 2.U, ptr)
+            io.train.redirect.valid -> redirect_update.ptr,
+            io.train.s2.valid -> s2_update.ptr,
+            io.s1Train.valid -> s1_update.ptr
+        )
+    )
+    /*
+    ptr的checkpoint
+    */
+    s0_ptr := MuxCase(
+        ptr,
+        Seq(
+            io.train.redirect.valid -> redirect_update.ptr,
+            io.train.s2.valid -> s2_update.ptr,
+            io.s1Train.valid -> s1_update.ptr
         )
     )
     /*
@@ -100,4 +129,7 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
             }
         }
     }
+
+    io.phrMeta.ptr := s1_ptr
+    io.phrMeta.phrLowBits := s1_phrLowBits
 }

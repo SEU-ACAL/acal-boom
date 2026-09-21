@@ -146,7 +146,13 @@ class FTQToICacheIO(implicit p: Parameters) extends BoomBundle
 {
   val req = DecoupledIO(new FtqToICacheRequestBundle)
 }
-
+class BpuRedirect(implicit p: Parameters) extends BoomBundle{
+  val cfiPc = UInt(vaddrBitsExtended.W)
+  val target = UInt(vaddrBitsExtended.W)
+  val taken  = Bool()
+  val attb  = new BranchAttribute
+  val meta = new PhrMeta
+}
 class FTQToBPUIO(implicit p: Parameters) extends BoomBundle
 {
   val ftq_idx   = Output(UInt((log2Ceil(ftqSz)+1).W))
@@ -156,6 +162,7 @@ class FTQToBPUIO(implicit p: Parameters) extends BoomBundle
   val redirect_pc     = Output(UInt(vaddrBitsExtended.W))
   val redirect_ftq_idx= Output(UInt((log2Ceil(ftqSz)+1).W)) 
   val redirect_ghist  = Output(new GlobalHistory)
+  val redirect        = Valid(new BpuRedirect)
   // val redirect_rasState = Output(new RasState)
 
   val redirect_btb_repair = Output(Bool())
