@@ -84,6 +84,46 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
     }
   }
 
+  /** Simulator-only traces used to correlate TAGE lookup state with updates. */
+  class TagePredictionTrace extends Bundle {
+    val tableIdx   = UInt(log2Ceil(tageNTables max 2).W)
+    val startPc    = UInt(vaddrBitsExtended.W)
+    val cfiPosition = UInt(log2Ceil(fetchBytes).W)
+    // History and tag before the BTB position is mixed into the lookup tag.
+    val ghist      = UInt(globalHistoryLength.W)
+    val idx        = UInt(log2Ceil(params.tableInfo.map(_._1).max).W)
+    val baseTag    = UInt(params.tagBits.W)
+    val storedTag  = UInt(params.tagBits.W)
+    val lookupTag  = UInt(params.tagBits.W)
+    val hit        = Bool()
+    val taken      = Bool()
+    val ctr        = UInt(3.W)
+    val valid      = Bool()
+    val u          = UInt(2.W)
+  }
+
+  class TageTrainTrace extends Bundle {
+    val tableIdx  = UInt(log2Ceil(tageNTables max 2).W)
+    val startPc   = UInt(vaddrBitsExtended.W)
+    val cfiPosition = UInt(log2Ceil(fetchBytes).W)
+    val ghist      = UInt(globalHistoryLength.W)
+    val idx       = UInt(log2Ceil(params.tableInfo.map(_._1).max).W)
+    val baseTag    = UInt(params.tagBits.W)
+    val tag       = UInt(params.tagBits.W)
+    // `taken` is the counter update direction; actualTaken is the branch direction.
+    val actualTaken = Bool()
+    val cfiValid  = Bool()
+    val mispredict = Bool()
+    val taken     = Bool()
+    val ctr       = UInt(3.W)
+    val valid     = Bool()
+    val u         = UInt(2.W)
+    val allocate  = Bool()
+  }
+
+  private val tagePredictionTrace = ChiselDB.createTable("TagePredictionTrace", new TagePredictionTrace)
+  private val tageTrainTrace = ChiselDB.createTable("TageTrainTrace", new TageTrainTrace)
+
   def compute_folded_hist(histLength: Int, hist: UInt, l: Int) = {
     val nChunks = (histLength + l - 1) / l
     val hist_chunks = (0 until nChunks) map {i =>
@@ -117,12 +157,16 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
 
   val s0_pc        = io.s0_pc
   val s1_pc        = RegNext(s0_pc)
+  val s2_pc        = RegNext(s1_pc)
 
 	val tableResults = Wire(Vec(tables.size, Valid(new TageTableReadResp())))
 
   io.tage_pred.taken.foreach { x =>
     x.valid := false.B
     x.bits := false.B
+  }
+  io.tage_pred.selectedEntry.foreach { x =>
+    x := 0.U.asTypeOf(x)
   }
   io.meta := 0.U.asTypeOf(io.meta)
   def inc_u(u: UInt, inc: Bool): UInt = {
@@ -147,6 +191,18 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
 		})
 	}))
 
+  val s1_hashIdx = VecInit((0 until tageNTables).map { idx =>
+    compute_tag_and_hash(
+      s1_idx,
+      s1_ghist,
+      params.tableInfo(idx)._3,
+      params.tableInfo(idx)._1,
+      params.tableInfo(idx)._2
+    )._1
+  })
+  val s2_hashIdx = RegNext(s1_hashIdx)
+  val s2_ghist = RegNext(s1_ghist)
+
 	val s2_tageResults = RegNext(tableResults)
 	val s2_tag = RegNext(s1_tag)
 	val s2_results = io.fromBtb.results
@@ -154,8 +210,29 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
 	s2_results.zipWithIndex.foreach { case (branch, i) =>
 		val position =  branch.bits.cfiPosition
 		val hitMask = VecInit(s2_tageResults.zipWithIndex.map{case(res,idx)=>
-			res.valid && res.bits.tag === s2_tag(i)(idx) && res.bits.valid
-		})
+				res.valid && res.bits.tag === s2_tag(i)(idx) && res.bits.valid
+			})
+		(0 until tageNTables).foreach { tableIdx =>
+			val tagePredictionTraceRecord = Wire(new TagePredictionTrace)
+			tagePredictionTraceRecord.tableIdx := tableIdx.U
+			tagePredictionTraceRecord.startPc := s2_pc
+			tagePredictionTraceRecord.cfiPosition := position
+			tagePredictionTraceRecord.ghist := s2_ghist
+			tagePredictionTraceRecord.idx := s2_hashIdx(tableIdx)
+			tagePredictionTraceRecord.baseTag := s2_tag(i)(tableIdx) ^ position
+			tagePredictionTraceRecord.storedTag := s2_tageResults(tableIdx).bits.tag
+			tagePredictionTraceRecord.lookupTag := s2_tag(i)(tableIdx)
+			tagePredictionTraceRecord.hit := hitMask(tableIdx)
+			tagePredictionTraceRecord.taken := s2_tageResults(tableIdx).bits.ctr(2)
+			tagePredictionTraceRecord.ctr := s2_tageResults(tableIdx).bits.ctr
+			tagePredictionTraceRecord.valid := s2_tageResults(tableIdx).bits.valid
+			tagePredictionTraceRecord.u := s2_tageResults(tableIdx).bits.u
+			tagePredictionTrace.log(
+				tagePredictionTraceRecord,
+				branch.valid && s2_tageResults(tableIdx).valid,
+				s"predict-t${tableIdx}-w${i}"
+			)(clock, reset)
+		}
     val hasProvider = hitMask.reduce(_||_)
     val providerOH = PriorityEncoderOH(hitMask.reverse).reverse
     val providerIdx = OHToUInt(providerOH)
@@ -170,12 +247,26 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
     val useProvider = hasProvider && !(providerEntry.ctr===3.U || providerEntry.ctr===4.U)
     val providerTaken = providerEntry.ctr(2)
     val altOrBasePred = Mux(hasAlt, altEntry.ctr(2), branch.bits.taken)
+    val selectedTableOH = VecInit(providerOH.zip(altOH).map { case (provider, alt) =>
+      Mux(useProvider, provider, alt)
+    })
+    val selectedTableIdx = Mux(useProvider, providerIdx, altIdx)
+    val selectedEntry = Mux1H(selectedTableOH, s2_tageResults.map(_.bits))
+    val selectedLookupTag = Mux1H(selectedTableOH, s2_tag(i))
+    val selectedIdx = Mux1H(selectedTableOH, s2_hashIdx)
 
     val preAllocTableMask = WireInit(VecInit(s2_tageResults.zipWithIndex.map{case(res,idx)=>
       (!res.bits.valid || res.bits.u === 0.U && (res.bits.ctr === 3.U || res.bits.ctr === 4.U)) && (idx.U > providerIdx)
     }))
     io.tage_pred.taken(i).valid := useProvider || hasAlt
     io.tage_pred.taken(i).bits := Mux(useProvider, providerTaken, altEntry.ctr(2))
+    io.tage_pred.selectedEntry(i).valid := useProvider || hasAlt
+    io.tage_pred.selectedEntry(i).tableIdx := selectedTableIdx
+    io.tage_pred.selectedEntry(i).idx := selectedIdx
+    io.tage_pred.selectedEntry(i).lookupTag := selectedLookupTag
+    io.tage_pred.selectedEntry(i).storedTag := selectedEntry.tag
+    io.tage_pred.selectedEntry(i).ctr := selectedEntry.ctr
+    io.tage_pred.selectedEntry(i).ghist := s2_ghist
     io.meta.provider(i).valid := hasProvider
     io.meta.provider(i).bits  := OHToUInt(providerOH) 
     io.meta.alt_differs(i)    := altOrBasePred =/= providerTaken
@@ -206,7 +297,7 @@ Train Stage
   val t0_hash = (0 until tageNTables).map { tableIdx =>
     compute_tag_and_hash(
       t0_idx,
-      t0_ghist.histories,
+      t0_ghist,
       params.tableInfo(tableIdx)._3,
       params.tableInfo(tableIdx)._1,
       params.tableInfo(tableIdx)._2
@@ -267,7 +358,7 @@ Train Stage
           t0_cfi.attribute.isConditional && t0_cfi.position === btb.bits.position
 
         val normalNeedUpdateCtr = normalHit && t0_tageMeta.provider_ctr(idx) =/= 0.U
-        val normalIncCtr = !normalNeedUpdateCtr
+        val normalIncCtr = normalHit && !normalNeedUpdateCtr
 
         val endCfiNeedUpdateCtr =  endCfiHit && 
         !(t0_tageMeta.provider_ctr(idx) === 7.U && t0_cfi.taken || 
@@ -337,6 +428,14 @@ Train Stage
       val hitPostion = t0_hitPosition(i)
       val hitNewCtr = Mux(t0_providerUpdateNeed(i), inc_ctr(hitTageCtr, t0_providerUpdateInc(i)), hitTageCtr)
       val hitNewU = inc_u(hitTageU, t0_providerUpdateUseful(i))
+      val trainPosition = Mux(alloc, t0_cfi.position, hitPostion)
+      val trainIsEndCfi = t0_cfi.valid && t0_cfi.attribute.isConditional && hitBtb &&
+        hitPostion === t0_cfi.position
+      val trainActualTaken = Mux(
+        alloc,
+        t0_cfi.taken,
+        trainIsEndCfi && t0_cfi.taken
+      )
 
       tables(i).io.writeReq.valid := t0_valid && (t0_providerUpdateNeed(i) || alloc) 
       tables(i).io.writeReq.bits.setIdx       := t0_hashIdx(i)
@@ -346,6 +445,28 @@ Train Stage
       tables(i).io.writeReq.bits.entry.tag    := t0_hashTag(i) ^ Mux(alloc,t0_cfi.position, hitPostion)
       tables(i).io.writeReq.bits.entry.ctr    := Mux(alloc, Cat(t0_cfi.taken,0.U(2.W)),hitNewCtr)
       tables(i).io.writeReq.bits.u      := Mux(alloc, 0.U(2.W), hitNewU)
+
+      val tageTrainTraceRecord = Wire(new TageTrainTrace)
+      tageTrainTraceRecord.tableIdx := i.U
+      tageTrainTraceRecord.startPc := t0_pc
+      tageTrainTraceRecord.cfiPosition := trainPosition
+      tageTrainTraceRecord.ghist := t0_ghist
+      tageTrainTraceRecord.idx := t0_hashIdx(i)
+      tageTrainTraceRecord.baseTag := t0_hashTag(i)
+      tageTrainTraceRecord.tag := tables(i).io.writeReq.bits.entry.tag
+      tageTrainTraceRecord.actualTaken := trainActualTaken
+      tageTrainTraceRecord.cfiValid := alloc || trainIsEndCfi
+      tageTrainTraceRecord.mispredict := alloc || (trainIsEndCfi && t0_cfi.mispredict)
+      tageTrainTraceRecord.taken := Mux(alloc, t0_cfi.taken, t0_providerUpdateInc(i))
+      tageTrainTraceRecord.ctr := tables(i).io.writeReq.bits.entry.ctr
+      tageTrainTraceRecord.valid := tables(i).io.writeReq.bits.entry.valid
+      tageTrainTraceRecord.u := tables(i).io.writeReq.bits.u
+      tageTrainTraceRecord.allocate := alloc
+      tageTrainTrace.log(
+        tageTrainTraceRecord,
+        tables(i).io.writeReq.valid && tables(i).io.writeReq.bits.writeEntry,
+        s"train-write-t${i}"
+      )(clock, reset)
     }
 
     XSPerfAccumulate("tage_train", t0_valid)

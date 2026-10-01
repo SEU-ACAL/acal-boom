@@ -5,6 +5,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 import boom.fdip.common._
 import boom.fdip.util._
+import boom.perf.ChiselDB
 /*
 PHR 需要考虑：
 1. 算法
@@ -13,6 +14,46 @@ PHR 需要考虑：
 4. 是否需要维护Fold PHR的状态，如果PHR时序紧张，面积紧张 需要使用fold PHR
 */
 class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
+    class PhrRedirectTrace extends Bundle {
+        val cfiPc = UInt(vaddrBitsExtended.W)
+        val target = UInt(vaddrBitsExtended.W)
+        val taken = Bool()
+        val s1Valid = Bool()
+        val s2Valid = Bool()
+        val ptrBefore = UInt(PHRPtrWidth.W)
+        val checkpointPtr = UInt(PHRPtrWidth.W)
+        val checkpointLowBits = UInt(PHRHashHighWidth.W)
+        val restoredPtr = UInt(PHRPtrWidth.W)
+        val restoredLowBits = UInt(PHRHashHighWidth.W)
+        val hashLow = UInt(PHRShamt.W)
+        val hashHigh = UInt(PHRHashHighWidth.W)
+        val historyBefore = UInt(globalHistoryLength.W)
+        val historyAtCheckpoint = UInt(globalHistoryLength.W)
+        val historyAtRestoredPtr = UInt(globalHistoryLength.W)
+    }
+    class PhrTrainTrace extends Bundle {
+        val startPc = UInt(vaddrBitsExtended.W)
+        val cfiPosition = UInt(log2Ceil(fetchBytes).W)
+        val target = UInt(vaddrBitsExtended.W)
+        val taken = Bool()
+        val checkpointPtr = UInt(PHRPtrWidth.W)
+        val updatedPtr = UInt(PHRPtrWidth.W)
+        val historyAtCheckpoint = UInt(globalHistoryLength.W)
+        // The history reconstructed from the checkpoint and used for TAGE train.
+        // This is a combinational view; it does not modify the live PHR state.
+        val historyAtTrainLookup = UInt(globalHistoryLength.W)
+        val historyAtUpdatedPtr = UInt(globalHistoryLength.W)
+    }
+    class PhrPostRedirectTrace extends Bundle {
+        val cfiPc = UInt(vaddrBitsExtended.W)
+        val expectedPtr = UInt(PHRPtrWidth.W)
+        val actualPtr = UInt(PHRPtrWidth.W)
+        val history = UInt(globalHistoryLength.W)
+    }
+    private val redirectTrace = ChiselDB.createTable("PhrRedirectTrace", new PhrRedirectTrace)
+    private val trainTrace = ChiselDB.createTable("PhrTrainTrace", new PhrTrainTrace)
+    private val postRedirectTrace = ChiselDB.createTable("PhrPostRedirectTrace", new PhrPostRedirectTrace)
+
     val io = IO(new Bundle{
         val s0_fire = Input(Bool())
         val s1_fire = Input(Bool())
@@ -26,10 +67,10 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
         val train_phr = Output(UInt(PHRWidth.W))
         // val s1_foldPhr
     })
-    val phr = RegInit(0.U(PHRWidth.W))
+    val phr = RegInit(VecInit(Seq.fill(PHRWidth)(false.B)))
     val ptr = RegInit(0.U.asTypeOf(new PhrPtr(PHRWidth)))
     def readLogical(ptr: PhrPtr): UInt = {
-        (Cat(phr, phr) >> (ptr.value + 1.U))(PHRWidth - 1, 0)
+        (Cat(phr.asUInt, phr.asUInt) >> (ptr.value + 1.U))(PHRWidth - 1, 0)
     }
     val s0_ptr = Wire(new PhrPtr(PHRWidth))
     val s0_fire = io.s0_fire
@@ -44,9 +85,10 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     val s1_phrValue = readLogical(s1_ptr)
     s1_Data.valid := s1_valid
     s1_Data.cifPc := io.s1Train.cfiPc
-    s1_Data.prediction := dontCare
-    s1_Data.prediction.taken := io.s1Train.prediction.taken
-    s1_Data.prediction.target := io.s1Train.prediction.target
+    s1_Data.phrMeta := io.phrMeta
+    s1_Data.prediction := DontCare
+    s1_Data.prediction.taken := io.s1Train.taken
+    s1_Data.prediction.target := io.s1Train.target
 
     val s1_component = getPathHashComponents(io.s1Train.cfiPc, io.s1Train.target)
     val s1_shiftBits = s1_component._1
@@ -73,12 +115,37 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     val redirect_data = Wire(new PhrUpdate)
     redirect_data.valid := redirect
     redirect_data.cifPc := io.train.redirect.bits.cfiPc
-    redirect_data.phrMeta := io.train.redirect.bits.meta
+    redirect_data.phrMeta := io.train.redirect.bits.phrMeta
     redirect_data.prediction := DontCare // 其他字段不care
     redirect_data.prediction.taken := io.train.redirect.bits.taken
     redirect_data.prediction.target := io.train.redirect.bits.target
 
     val redirect_update = getUpdatePtrs(redirect_data,redirect_hashHighBits)
+
+    val redirectTraceRecord = Wire(new PhrRedirectTrace)
+    redirectTraceRecord.cfiPc := redirect_data.cifPc
+    redirectTraceRecord.target := redirect_data.prediction.target
+    redirectTraceRecord.taken := redirect_data.prediction.taken
+    redirectTraceRecord.s1Valid := io.s1Train.valid
+    redirectTraceRecord.s2Valid := io.train.s2.valid
+    redirectTraceRecord.ptrBefore := ptr.value
+    redirectTraceRecord.checkpointPtr := redirect_data.phrMeta.ptr.value
+    redirectTraceRecord.checkpointLowBits := redirect_data.phrMeta.phrLowBits
+    redirectTraceRecord.restoredPtr := redirect_update.ptr.value
+    redirectTraceRecord.restoredLowBits := redirect_update.phrLowBits
+    redirectTraceRecord.hashLow := redirect_shiftBits
+    redirectTraceRecord.hashHigh := redirect_hashHighBits
+    redirectTraceRecord.historyBefore := readLogical(ptr)(globalHistoryLength-1, 0)
+    redirectTraceRecord.historyAtCheckpoint := readLogical(redirect_data.phrMeta.ptr)(globalHistoryLength-1, 0)
+    redirectTraceRecord.historyAtRestoredPtr := readLogical(redirect_update.ptr)(globalHistoryLength-1, 0)
+    redirectTrace.log(redirectTraceRecord, redirect, "phr-redirect")(clock, reset)
+
+    val postRedirectTraceRecord = Wire(new PhrPostRedirectTrace)
+    postRedirectTraceRecord.cfiPc := RegNext(redirect_data.cifPc)
+    postRedirectTraceRecord.expectedPtr := RegNext(redirect_update.ptr.value)
+    postRedirectTraceRecord.actualPtr := ptr.value
+    postRedirectTraceRecord.history := readLogical(ptr)(globalHistoryLength-1, 0)
+    postRedirectTrace.log(postRedirectTraceRecord, RegNext(redirect, false.B), "phr-post-redirect")(clock, reset)
 
     val phrWriteValid = io.train.s2.valid || io.train.redirect.valid || io.s1Train.valid
     val phrWriteTaken = MuxCase(
@@ -156,17 +223,38 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
 
     val bpuTrainTaken = io.train.bpuTrain.valid && io.train.bpuTrain.bits.bpuTraincfi.taken
     val bpuTrainData = Wire(new PhrUpdate)
+    bpuTrainData := DontCare
     bpuTrainData.valid := io.train.bpuTrain.valid
-    bpuTrainData.cifPc := io.train.bpuTrain.bits.bpuTraincfi.cfiPc
+
     bpuTrainData.phrMeta := io.train.bpuTrain.bits.bpuTrainPhrMeta
-    bpuTrainData.prediction := DontCare // 其他字段不care
     bpuTrainData.prediction.taken := io.train.bpuTrain.bits.bpuTraincfi.taken
     bpuTrainData.prediction.target := io.train.bpuTrain.bits.bpuTraincfi.target
-    val bpuTrain_component = getPathHashComponents(io.train.bpuTrain.bits.bpuTraincfi.cfiPc, io.train.bpuTrain.bits.bpuTraincfi.target)
-    val bpuTrain_shiftBits = bpuTrain_component._1
+    val bpuTrain_cifPc = fetchAlign(io.train.bpuTrain.bits.startPc) + (io.train.bpuTrain.bits.bpuTraincfi.position<<1.U)
+    val bpuTrain_component = getPathHashComponents(bpuTrain_cifPc, io.train.bpuTrain.bits.bpuTraincfi.target)
     val bpuTrain_hashHighBits = bpuTrain_component._2
+    // getUpdatePtrs() is still used by the speculative/redirect PHR paths above.
+    // TAGE training, however, must use the history seen at lookup time.  Read
+    // the saved checkpoint window and overlay its saved low bits on a temporary
+    // value.  Neither the live PHR array nor the global pointer is modified.
     val bpuTrain_update = getUpdatePtrs(bpuTrainData,bpuTrain_hashHighBits)
-    val bpuPhrValue = readLogical(bpuTrain_update.ptr)
+    val bpuTrainCheckpointPhr = readLogical(bpuTrainData.phrMeta.ptr)
+    val bpuTrainLookupPhr = Cat(
+        bpuTrainCheckpointPhr(PHRWidth - 1, PHRHashHighWidth),
+        bpuTrainData.phrMeta.phrLowBits
+    )
+    val bpuPhrValue = bpuTrainLookupPhr
 
-    io.train_phr := bpuPhrValue
+    val trainTraceRecord = Wire(new PhrTrainTrace)
+    trainTraceRecord.startPc := io.train.bpuTrain.bits.startPc
+    trainTraceRecord.cfiPosition := io.train.bpuTrain.bits.bpuTraincfi.position
+    trainTraceRecord.target := io.train.bpuTrain.bits.bpuTraincfi.target
+    trainTraceRecord.taken := io.train.bpuTrain.bits.bpuTraincfi.taken
+    trainTraceRecord.checkpointPtr := bpuTrainData.phrMeta.ptr.value
+    trainTraceRecord.updatedPtr := bpuTrain_update.ptr.value
+    trainTraceRecord.historyAtCheckpoint := bpuTrainCheckpointPhr(globalHistoryLength-1, 0)
+    trainTraceRecord.historyAtTrainLookup := bpuTrainLookupPhr(globalHistoryLength-1, 0)
+    trainTraceRecord.historyAtUpdatedPtr := readLogical(bpuTrain_update.ptr)(globalHistoryLength-1, 0)
+    trainTrace.log(trainTraceRecord, io.train.bpuTrain.valid, "phr-train")(clock, reset)
+
+    io.train_phr := bpuPhrValue(globalHistoryLength-1,0)
 }

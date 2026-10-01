@@ -15,6 +15,22 @@ import boom.perf._
 
 import scala.math.min
 
+class L1BtbTrainTrace(implicit p: Parameters) extends L1BtbBundle()(p) {
+  val startPc = UInt(vaddrBitsExtended.W)
+  val way = UInt(log2Ceil(l1btbParameters.nWays max 2).W)
+  val cfiValid = Bool()
+  val cfiPosition = UInt(log2Ceil(fetchBytes).W)
+  val actualTaken = Bool()
+  val mispredict = Bool()
+  val hit = Bool()
+  val cfiHit = Bool()
+  val priorHit = Bool()
+  val needUpdateCtr = Bool()
+  val updateEntry = Bool()
+  val ctrBefore = UInt(2.W)
+  val ctrAfter = UInt(2.W)
+}
+
 /*
 s0: request stage
 s1: read stage
@@ -24,6 +40,7 @@ s2: response stage
 class L1BTB(implicit p: Parameters) extends L1BtbModule()(p)
 with L1BTBHelper{
 	val params = l1BtbParams
+	private val trainTrace = ChiselDB.createTable("L1BtbTrainTrace", new L1BtbTrainTrace)
 
 	val io = IO(new Bundle {
 		val f0_valid = Input(Bool())
@@ -179,7 +196,7 @@ with L1BTBHelper{
 	val t1_entryWrite = VecInit((0 until nWays).map { w =>
 		t1_needUpdateEntry && t1_updateEntryWay === w.U
 	})
-
+	dontTouch(t1_updateCtr)
 	for (w <- 0 until nWays) {
 		t1_needUpdateCtr(w) := t1_valid && (t1_cfiHits(w) || t1_priorHits(w)) && t1_meta(w).bits.attribute.isConditional ||
 			t1_needUpdateEntry && t1_updateEntryWay === w.U
@@ -197,6 +214,22 @@ with L1BTBHelper{
 		when( t1_needUpdateCtr(w)) {
 			counters(w).write(t1_idx, t1_updateCtr(w))
 		}
+
+		val trainTraceRecord = Wire(new L1BtbTrainTrace)
+		trainTraceRecord.startPc := t1_pc
+		trainTraceRecord.way := w.U
+		trainTraceRecord.cfiValid := t1_cfi.valid
+		trainTraceRecord.cfiPosition := t1_cfi.position
+		trainTraceRecord.actualTaken := t1_cfi.taken
+		trainTraceRecord.mispredict := t1_cfi.mispredict
+		trainTraceRecord.hit := t1_blockHits(w)
+		trainTraceRecord.cfiHit := t1_cfiHits(w)
+		trainTraceRecord.priorHit := t1_priorHits(w)
+		trainTraceRecord.needUpdateCtr := t1_needUpdateCtr(w)
+		trainTraceRecord.updateEntry := t1_entryWrite(w)
+		trainTraceRecord.ctrBefore := t1_meta(w).bits.ctr
+		trainTraceRecord.ctrAfter := Mux(t1_needUpdateCtr(w), t1_updateCtr(w), t1_meta(w).bits.ctr)
+		trainTrace.log(trainTraceRecord, t1_valid && t1_cfi.valid, s"train-w${w}")(clock, reset)
 	}
 
 	XSPerfAccumulate("l1btb_train", t1_valid)

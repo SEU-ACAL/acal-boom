@@ -592,11 +592,13 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   
   val backend_redirectCfiPc = fetchAlign(pc_mem(bpd_update_idx).start_pc) + (bpd_redirect_entry.cfiPosition.bits << 1.U)
   val ifu_redirectCfiPc     = fetchAlign(pc_mem(bpd_update_idx).start_pc) + (new_entry.cfiPosition.bits << 1.U)
+  io.toBPU.redirect :=DontCare
   io.toBPU.redirect.valid                         := io.toBPU.redirect_val
   io.toBPU.redirect.bits.cfiPc                    := RegNext(Mux(io.fromBackend.redirect_val,backend_redirectCfiPc,ifu_redirectCfiPc))
   io.toBPU.redirect.bits.target                   := io.toBPU.redirect_pc 
   io.toBPU.redirect.bits.taken                    := RegNext(Mux(io.fromBackend.redirect_val && io.fromBackend.brupdate.b2.mispredict ,
         io.fromBackend.brupdate.b2.taken,ifu_redirect_entry.cfi_taken))
+
   
   // io.toBPU.redirect.bits.attb                     := RegNext(Mux(io.fromBackend.redirect_val && io.fromBackend.brupdate.b2.mispredict ,
   //       io.fromBackend.brupdate.b2.uop.cf.attribute,ifu_redirect_entry.attribute))

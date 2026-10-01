@@ -3,6 +3,7 @@ package boom.fdip.ifu.bpd
 import chisel3._
 import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
+import boom.fdip.ifu.bpd.common.CircularQueuePtr
 
 import boom.fdip.common._
 import boom.fdip.util._
@@ -23,7 +24,7 @@ class PhrPtr(entries: Int)(implicit p: Parameters)
   }
 }
 //used for PHR s1 update
-class PhrMeta(implicit p: Parameters) extends PHRBundle()(p) with HasBpdParameters {
+class PhrMeta(implicit p: Parameters) extends PHRBundle()(p) with HasPhrParameters {
   val ptr = new PhrPtr(PHRWidth)
   val phrLowBits = UInt(PHRHashHighWidth.W)
 
@@ -44,11 +45,12 @@ class PhrUpdate(implicit p: Parameters) extends PHRBundle()(p) with HasBpdParame
 }
 
 /** Result of restoring a PHR snapshot and optionally applying a taken CFI. */
-class PhrUpdateResult(implicit p: Parameters) extends PHRBundle()(p) with HasBpdParameters {
+class PhrUpdateResult(implicit p: Parameters) extends PHRBundle()(p) with HasPhrParameters {
   val ptr        = new PhrPtr(PHRWidth)
   val phrLowBits = UInt(PHRHashHighWidth.W)
 }
 class BpuTrainPhrInfo(implicit p: Parameters) extends PHRBundle()(p) with HasBpdParameters {
+  val startPc           = UInt(vaddrBitsExtended.W)
   val bpuTrainPhrMeta   = new PhrMeta
   val bpuTraincfi       = new ResolvedCfi
 }

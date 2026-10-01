@@ -48,6 +48,17 @@ class TagePredictMeta(val nTables: Int)(implicit p: Parameters) extends TageBund
 
 class TagePrediction(implicit p: Parameters) extends TageBundle()(p) {
   val taken = Vec(l1btbParameters.nWays, Valid(Bool()))
+  val selectedEntry = Vec(l1btbParameters.nWays, new TageSelectedEntry())
+}
+
+class TageSelectedEntry(implicit p: Parameters) extends TageBundle()(p) {
+  val valid = Bool()
+  val tableIdx = UInt(log2Ceil(tageParameters.tableInfo.size max 2).W)
+  val idx = UInt(log2Ceil(tageParameters.tableInfo.map(_._1).max).W)
+  val lookupTag = UInt(tageParameters.tagBits.W)
+  val storedTag = UInt(tageParameters.tagBits.W)
+  val ctr = UInt(3.W)
+  val ghist = UInt(globalHistoryLength.W)
 }
 
 class TageFromBtbInfo(implicit p: Parameters) extends TageBundle()(p) {

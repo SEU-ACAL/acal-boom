@@ -49,6 +49,45 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
     val ghistRepair = Bool()
   }
 
+  /** Final BPU candidate trace, including the TAGE item used for each CFI direction. */
+  class BpuFinalPredictionTrace extends Bundle {
+    val startPc = UInt(vaddrBitsExtended.W)
+    val candidateWay = UInt(log2Ceil(l1btbParameters.nWays max 2).W)
+    val candidateValid = Bool()
+    val cfiPosition = UInt(log2Ceil(fetchBytes).W)
+    val cfiAttribute = UInt(io.fromFtq.train.bits.cfi.attribute.getWidth.W)
+    // Direction source for this BTB candidate: 0=BTB, 1=TAGE, 2=RAS, 3=fallthrough.
+    val source = UInt(2.W)
+    val candidateTaken = Bool()
+    // Raw BTB state for this candidate.  btbTaken is before TAGE override.
+    val btbMetaValid = Bool()
+    val btbHit = Bool()
+    val btbCtr = UInt(2.W)
+    val btbTaken = Bool()
+    // Effective TAGE selection state for this candidate.
+    val tageProviderValid = Bool()
+    val tageProviderTableIdx = UInt(log2Ceil(tageParameters.tableInfo.size max 2).W)
+    val tageProviderCtr = UInt(3.W)
+    val tageAltDiffers = Bool()
+    val selected = Bool()
+    val finalTaken = Bool()
+    val finalPosition = UInt(log2Ceil(fetchBytes).W)
+    val finalTarget = UInt(vaddrBitsExtended.W)
+    // Source of the final selected direction and target respectively.
+    val finalSource = UInt(2.W)
+    val targetSource = UInt(2.W)
+    val tageValid = Bool()
+    val tageTableIdx = UInt(log2Ceil(tageParameters.tableInfo.size max 2).W)
+    val tageIdx = UInt(log2Ceil(tageParameters.tableInfo.map(_._1).max).W)
+    val tageLookupTag = UInt(tageParameters.tagBits.W)
+    val tageStoredTag = UInt(tageParameters.tagBits.W)
+    val tageCtr = UInt(3.W)
+    // Full PHR snapshot at the lookup request; TAGE consumes its low history bits.
+    val phr = UInt((globalHistoryLength + bpdParameters.phr.Shamt * ftqSz).W)
+    // 0=BTB, 1=TAGE, 2=RAS, 3=fallthrough/no CFI.
+    val s2Redirect = Bool()
+  }
+
   class BpuTrainTrace extends Bundle {
     val startPc = UInt(vaddrBitsExtended.W)
     val cfiValid = Bool()
@@ -59,6 +98,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   }
 
   private val predictionTrace = ChiselDB.createTable("BpuPredictionTrace", new BpuPredictionTrace)
+  private val finalPredictionTrace = ChiselDB.createTable("BpuFinalPredictionTrace", new BpuFinalPredictionTrace)
   private val trainTrace = ChiselDB.createTable("BpuTrainTrace", new BpuTrainTrace)
 
   //TODO: BTB need to record call or ret so that we can use RAS and predict update
@@ -100,6 +140,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
 
   val s1_prediction = microBtb.io.resp
   val s1_phrMeta = phr.io.phrMeta
+  val s1_phr = RegEnable(s0_phr, s0_fire)
   val s1_pc             = RegEnable(s0_pc,s0_fire)
   val s1_clear          = WireInit(false.B)
   val s1_valid          = RegInit(false.B)
@@ -131,6 +172,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
 
   val s2_s1_prediction  = RegEnable(s1_finalPrediction,s1_fire)
   val s2_phrMeta         = RegEnable(s1_phrMeta,s1_fire)
+  val s2_phr             = RegEnable(s1_phr,s1_fire)
   val s2_pc             = RegEnable(s1_pc,s1_fire)
   val s2_alignPc        = fetchAlign(s2_pc)
   val s2_valid          = RegInit(false.B)
@@ -349,9 +391,10 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   phr.io.train.redirect.valid := io.fromFtq.redirect.valid
   phr.io.train.redirect.bits := io.fromFtq.redirect.bits
 
-  phr.io.bpuTrain.valid := io.fromFtq.train.valid
-  phr.io.bpuTrain.bits.bpuTrainPhrMeta := io.fromFtq.train.bits.phrMeta
-  phr.io.bpuTrain.bits.bpuTraincfi := io.fromFtq.train.bits.cfi
+  phr.io.train.bpuTrain.valid := io.fromFtq.train.valid
+  phr.io.train.bpuTrain.bits.startPc := io.fromFtq.train.bits.startPc
+  phr.io.train.bpuTrain.bits.bpuTrainPhrMeta := io.fromFtq.train.bits.phrMeta
+  phr.io.train.bpuTrain.bits.bpuTraincfi := io.fromFtq.train.bits.cfi
 
 
   // f2 can override f1 either because its predicted next PC differs or to
@@ -397,6 +440,63 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   predictionTraceRecord.s2Redirect := s2_redirect
   predictionTraceRecord.ghistRepair := 0.U
   predictionTrace.log(predictionTraceRecord, s2_fire && !s2_clear, "bpu-f2")(clock, reset)
+
+  val finalPredictionSource = Mux(
+    !s2_firstTakenBranch.valid || !s2_taken, 3.U,
+    Mux(s2_useRas, 2.U,
+      Mux(Mux1H(s2_firstTakenBranchOH,
+        s2_brVec.zip(s2_tageResp.taken).map { case (branch, tage) => branch && tage.valid }), 1.U, 0.U))
+  )
+  for (i <- 0 until l1btbParameters.nWays) {
+    val candidateTage = s2_tageResp.selectedEntry(i)
+    val candidateUsesTage = s2_brVec(i) && s2_tageResp.taken(i).valid
+    val candidateSource = Mux(
+      !s2_btbResp(i).valid, 3.U,
+      Mux(s2_useRas && s2_btbResp(i).bits.attribute.isReturn, 2.U,
+        Mux(candidateUsesTage, 1.U, 0.U))
+    )
+    val finalPredictionTraceRecord = Wire(new BpuFinalPredictionTrace)
+    finalPredictionTraceRecord.startPc := s2_pc
+    finalPredictionTraceRecord.candidateWay := i.U
+    finalPredictionTraceRecord.candidateValid := s2_btbResp(i).valid
+    finalPredictionTraceRecord.cfiPosition := s2_btbResp(i).bits.cfiPosition
+    finalPredictionTraceRecord.cfiAttribute := s2_btbResp(i).bits.attribute.asUInt
+    finalPredictionTraceRecord.source := candidateSource
+    finalPredictionTraceRecord.candidateTaken := s2_takenMask(i)
+    finalPredictionTraceRecord.btbMetaValid := btb.io.meta(i).valid
+    finalPredictionTraceRecord.btbHit := btb.io.meta(i).bits.hit
+    finalPredictionTraceRecord.btbCtr := btb.io.meta(i).bits.ctr
+    finalPredictionTraceRecord.btbTaken := s2_btbResp(i).bits.taken
+    finalPredictionTraceRecord.tageProviderValid := tage.io.meta.provider(i).valid
+    finalPredictionTraceRecord.tageProviderTableIdx := Mux(
+      tage.io.meta.provider(i).valid,
+      tage.io.meta.provider(i).bits,
+      0.U)
+    finalPredictionTraceRecord.tageProviderCtr := tage.io.meta.provider_ctr(i)
+    finalPredictionTraceRecord.tageAltDiffers := tage.io.meta.alt_differs(i)
+    finalPredictionTraceRecord.selected := s2_firstTakenBranchOH(i)
+    finalPredictionTraceRecord.finalTaken := s2_prediction.taken
+    finalPredictionTraceRecord.finalPosition := s2_prediction.cfiPosition
+    finalPredictionTraceRecord.finalTarget := s2_prediction.target
+    finalPredictionTraceRecord.finalSource := finalPredictionSource
+    finalPredictionTraceRecord.targetSource := Mux(
+      !s2_firstTakenBranch.valid || !s2_taken, 3.U,
+      Mux(s2_useRas, 2.U, 0.U)
+    )
+    finalPredictionTraceRecord.tageValid := candidateUsesTage
+    finalPredictionTraceRecord.tageTableIdx := candidateTage.tableIdx
+    finalPredictionTraceRecord.tageIdx := candidateTage.idx
+    finalPredictionTraceRecord.tageLookupTag := candidateTage.lookupTag
+    finalPredictionTraceRecord.tageStoredTag := candidateTage.storedTag
+    finalPredictionTraceRecord.tageCtr := candidateTage.ctr
+    finalPredictionTraceRecord.phr := s2_phr
+    finalPredictionTraceRecord.s2Redirect := s2_redirect
+    finalPredictionTrace.log(
+      finalPredictionTraceRecord,
+      s2_fire && !s2_clear,
+      s"bpu-final-candidate-w${i}"
+    )(clock, reset)
+  }
 
   val trainTraceRecord = Wire(new BpuTrainTrace)
   trainTraceRecord.startPc := io.fromFtq.train.bits.startPc

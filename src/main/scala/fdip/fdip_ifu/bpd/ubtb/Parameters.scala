@@ -12,7 +12,7 @@ import boom.fdip.ifu.bpd.ubtb.BoomFAMicroBTBParams
 import boom.fdip.ifu.bpd.tage.BoomTageParams
 /** Configuration owned by the fully-associative micro-BTB predictor. */
 case class BoomFAMicroBTBParams(
-  nEntries: Int = 16,
+  nEntries: Int = 64,
   offsetSz: Int = 13
 )
 
