@@ -76,13 +76,16 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     val s0_fire = io.s0_fire
     val s1_fire = io.s1_fire
     val s2_fire = io.s2_fire
-    val s0_phrValue = readLogical(s0_ptr)
+    val s0_phrBeforeWrite = readLogical(s0_ptr)
+    val s0_phrValue = WireInit(s0_phrBeforeWrite)
     io.s0_phr := s0_phrValue
 
     val s1_valid = io.s1Train.valid
     val s1_Data = Wire(new PhrUpdate)
     val s1_ptr = RegEnable(s0_ptr, s0_fire)
-    val s1_phrValue = readLogical(s1_ptr)
+    // Save the exact lookup snapshot, including any same-cycle write bypass.
+    // Rereading the live array in s1 can observe a different history version.
+    val s1_phrLowBits = RegEnable(s0_phrValue(PHRHashHighWidth-1,0), s0_fire)
     s1_Data.valid := s1_valid
     s1_Data.cifPc := io.s1Train.cfiPc
     s1_Data.phrMeta := io.phrMeta
@@ -94,7 +97,6 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
     val s1_shiftBits = s1_component._1
     val s1_hashHighBits = s1_component._2
     val s1_update = getUpdatePtrs(s1_Data,s1_hashHighBits)
-    val s1_phrLowBits = s1_phrValue(PHRHashHighWidth-1,0)
 
     val s2_override = io.train.s2.valid
     val s2_component = getPathHashComponents(io.train.s2.cifPc, io.train.s2.prediction.target)
@@ -177,25 +179,18 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
             io.s1Train.valid -> s1_update.ptr
         )
     )
-    ptr := MuxCase(
-        ptr,
-        Seq(
-            io.train.redirect.valid -> redirect_update.ptr,
-            io.train.s2.valid -> s2_update.ptr,
-            io.s1Train.valid -> s1_update.ptr
-        )
-    )
-    /*
-    ptr的checkpoint
-    */
-    s0_ptr := MuxCase(
-        ptr,
-        Seq(
-            io.train.redirect.valid -> redirect_update.ptr,
-            io.train.s2.valid -> s2_update.ptr,
-            io.s1Train.valid -> s1_update.ptr
-        )
-    )
+    ptr := phrWritePtr
+    s0_ptr := phrWritePtr
+
+    // s0 uses the selected post-update pointer before the register array is
+    // written. Forward the same write into its logical low bits so lookup
+    // observes the history that will exist after this clock edge. The write
+    // starts at phrWritePtr + 1, which is logical bit 0 even across wraparound.
+    when(phrWriteValid) {
+        s0_phrValue := Mux(phrWriteTaken,
+            Cat(s0_phrBeforeWrite(PHRWidth-1, PHRHashWidth), phrWriteBits),
+            Cat(s0_phrBeforeWrite(PHRWidth-1, PHRHashHighWidth), phrWriteLowBits))
+    }
     /*
     如果 taken 此时 ptr一定是已经更新过的值了(已经-2)，而ptr指示的是下一个要写的位置，比如 phr width为32
     s1发生taken，此时ptr为 30，其需要写入的位置为 31, 0, 1, 2, 3, 4, 5, 6, 7
