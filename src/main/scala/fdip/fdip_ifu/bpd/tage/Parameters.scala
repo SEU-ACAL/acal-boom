@@ -9,8 +9,11 @@ case class BoomTageParams(
                                               (128, 32, 10),
                                               (128, 64, 10)),
   uBitPeriod: Int = 2048,
-  tagBits: Int = 10
-)
+  tagBits: Int = 10,
+  writeBypassEntries: Int = 4
+) {
+  require(writeBypassEntries > 0, "TAGE write bypass must retain at least one write event")
+}
 
 trait HasTageParameters extends boom.fdip.ifu.bpd.HasBpdParameters {
   def tageParams: BoomTageParams = tageParameters

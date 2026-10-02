@@ -32,3 +32,11 @@ class BTBPredictMeta(implicit p: Parameters) extends L1BtbBundle()(p) {
   val attribute = new BranchAttribute
   val ctr       = UInt(2.W)
 }
+
+class BTBWriteBypass(implicit p: Parameters) extends L1BtbBundle()(p) {
+  val valid = Vec(L1BtbWays, Bool())
+  val idx = UInt(log2Ceil(L1BtbSets).W)
+  val tag = UInt(L1BtbTagWidth.W)
+  val position = Vec(L1BtbWays, UInt(log2Ceil(fetchBytes).W))
+  val ctr = Vec(L1BtbWays, UInt(2.W))
+}

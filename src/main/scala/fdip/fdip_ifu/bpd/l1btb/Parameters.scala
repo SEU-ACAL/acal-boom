@@ -14,8 +14,11 @@ import boom.fdip.ifu.bpd.tage.BoomTageParams
 case class BoomL1BTBParams(
   nSets: Int = 128,
   nWays: Int = 4,
-  offsetSz: Int = 20
-)
+  offsetSz: Int = 20,
+  writeBypassEntries: Int = 4
+) {
+  require(writeBypassEntries > 0, "BTB write bypass must retain at least one write event")
+}
 
 trait HasL1BtbParameters extends boom.fdip.ifu.bpd.HasBpdParameters {
   def l1BtbParams: BoomL1BTBParams = l1btbParameters

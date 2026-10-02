@@ -38,6 +38,13 @@ class TageTableWriteReq(params: BoomTageParams = BoomTageParams())(implicit p: P
   val u           = UInt(2.W)
 }
 
+class TageWriteBypass(implicit p: Parameters) extends TageBundle()(p) {
+  val valid = Vec(TageTables, Bool())
+  val idx = Vec(TageTables, UInt(log2Ceil(tageParams.tableInfo.map(_._1).max).W))
+  val tag = Vec(TageTables, UInt(TageTagWidth.W))
+  val ctr = Vec(TageTables, UInt(3.W))
+}
+
 class TagePredictMeta(val nTables: Int)(implicit p: Parameters) extends TageBundle()(p) {
   val provider     = Vec(predWidth, Valid(UInt(log2Ceil(nTables).W)))
   val alt_differs  = Vec(predWidth, Bool())

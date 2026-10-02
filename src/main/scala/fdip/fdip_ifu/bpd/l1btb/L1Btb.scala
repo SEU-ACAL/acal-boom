@@ -145,20 +145,23 @@ with L1BTBHelper{
 	val t1_cfi = RegNext(t0_cfi)
 	val t1_valid = RegNext(t0_valid)
 	val t1_pc = RegNext(t0_pc)
+	val t1_instOffset = t1_pc(log2Ceil(fetchBytes)-1, 1)
 	// Read the trained block in parallel with the registered training metadata.
 	// The metadata identifies positions; the memory read preserves each entry's
 	// target and current saturating counter for per-way updates.
 	// val t1_entries = VecInit(btb.map(_.read(t0_idx, t0_valid)))
 	val t1_blockHits = t1_meta.map(meta => meta.valid && meta.bits.hit)
 	val t1_cfiHits = t1_blockHits.zip(t1_meta).map { case (hit, meta) =>
-		hit && meta.bits.position === t1_cfi.position && t1_cfi.valid
+		hit && meta.bits.position >= t1_instOffset &&
+			meta.bits.position === t1_cfi.position && t1_cfi.valid
 	}
 	val t1_hasConditional = t1_blockHits.zip(t1_meta).map { case (hit, meta) =>
 		hit && meta.bits.attribute.isConditional
 	}.reduce(_ || _)
 	val t1_cfiHit = t1_cfiHits.reduce(_ || _)
 	val t1_priorHits = t1_blockHits.zip(t1_meta).map { case (hit, meta) =>
-		hit && meta.bits.position < t1_cfi.position
+		// Entries before this request's start PC were not executed.
+		hit && meta.bits.position >= t1_instOffset && meta.bits.position < t1_cfi.position
 	}
 	val t1_cfiHitEntry = Mux1H(t1_cfiHits, t1_meta.map(_.bits))
 
@@ -188,13 +191,26 @@ with L1BTBHelper{
 
 	val t1_trainCfi = t1_valid && t1_cfi.valid
 	//TODO: add indirect branch update logic
-	val t1_needUpdateEntry = t1_valid && t1_cfi.valid && t1_cfi.mispredict && (!t1_cfiHit || t1_cfiHitEntry.attribute =/= t1_cfi.attribute || t1_cfi.attribute.isOtherIndirect)
+	val t1_needUpdateEntry = t1_valid && t1_cfi.valid && t1_cfi.position >= t1_instOffset &&
+		t1_cfi.mispredict && (!t1_cfiHit || t1_cfiHitEntry.attribute =/= t1_cfi.attribute || t1_cfi.attribute.isOtherIndirect)
 	val t1_updateEntryWay = Mux(!t1_cfiHit, replacementWay, PriorityEncoder(t1_cfiHits))
 
 	val t1_needUpdateCtr = WireInit(VecInit(Seq.tabulate(nWays)(_ => false.B)))
 	val t1_updateCtr = Wire(Vec(nWays,UInt(2.W)))
 	val t1_entryWrite = VecInit((0 until nWays).map { w =>
 		t1_needUpdateEntry && t1_updateEntryWay === w.U
+	})
+	// FIFO of write events; entry 0 is newest and includes all concurrent ways.
+	val ctrWriteBypass = RegInit(VecInit(Seq.fill(params.writeBypassEntries)(
+		0.U.asTypeOf(new BTBWriteBypass))))
+	val t1_baseCtr = VecInit((0 until nWays).map { w =>
+		val bypassHits = VecInit(ctrWriteBypass.map { entry =>
+			entry.valid(w) && entry.idx === t1_idx(log2Ceil(nSets)-1, 0) &&
+				entry.tag === t1_tag(tagSz-1, 0) &&
+				entry.position(w) === t1_meta(w).bits.position
+		})
+		val bypassCtr = Mux1H(PriorityEncoderOH(bypassHits.asUInt), ctrWriteBypass.map(_.ctr(w)))
+		Mux(bypassHits.asUInt.orR, bypassCtr, t1_meta(w).bits.ctr)
 	})
 	dontTouch(t1_updateCtr)
 	for (w <- 0 until nWays) {
@@ -203,8 +219,8 @@ with L1BTBHelper{
 	    t1_updateCtr(w) := MuxCase(0.U,
 			Seq(
 				(t1_needUpdateEntry && t1_updateEntryWay === w.U) -> Mux(t1_cfi.attribute.isConditional,Mux(t1_cfi.taken, 2.U, 1.U), 3.U),
-				(t1_needUpdateCtr(w) && t1_cfiHits(w) && t1_cfi.attribute.isConditional) -> incCtr(t1_meta(w).bits.ctr, t1_cfi.taken),
-				(t1_needUpdateCtr(w) && t1_priorHits(w)) -> incCtr(t1_meta(w).bits.ctr, false.B)
+				(t1_needUpdateCtr(w) && t1_cfiHits(w) && t1_cfi.attribute.isConditional) -> incCtr(t1_baseCtr(w), t1_cfi.taken),
+				(t1_needUpdateCtr(w) && t1_priorHits(w)) -> incCtr(t1_baseCtr(w), false.B)
 			)
 		)
 
@@ -227,9 +243,22 @@ with L1BTBHelper{
 		trainTraceRecord.priorHit := t1_priorHits(w)
 		trainTraceRecord.needUpdateCtr := t1_needUpdateCtr(w)
 		trainTraceRecord.updateEntry := t1_entryWrite(w)
-		trainTraceRecord.ctrBefore := t1_meta(w).bits.ctr
-		trainTraceRecord.ctrAfter := Mux(t1_needUpdateCtr(w), t1_updateCtr(w), t1_meta(w).bits.ctr)
+		trainTraceRecord.ctrBefore := t1_baseCtr(w)
+		trainTraceRecord.ctrAfter := Mux(t1_needUpdateCtr(w), t1_updateCtr(w), t1_baseCtr(w))
 		trainTrace.log(trainTraceRecord, t1_valid && t1_cfi.valid, s"train-w${w}")(clock, reset)
+	}
+
+	when (t1_needUpdateCtr.asUInt.orR) {
+		for (entry <- 1 until params.writeBypassEntries) {
+			ctrWriteBypass(entry) := ctrWriteBypass(entry - 1)
+		}
+		ctrWriteBypass(0).valid := t1_needUpdateCtr
+		ctrWriteBypass(0).idx := t1_idx(log2Ceil(nSets)-1, 0)
+		ctrWriteBypass(0).tag := t1_tag(tagSz-1, 0)
+		ctrWriteBypass(0).position := VecInit((0 until nWays).map { w =>
+			Mux(t1_entryWrite(w), t1_cfi.position, t1_meta(w).bits.position)
+		})
+		ctrWriteBypass(0).ctr := t1_updateCtr
 	}
 
 	XSPerfAccumulate("l1btb_train", t1_valid)

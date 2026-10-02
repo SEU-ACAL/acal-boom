@@ -60,7 +60,7 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
   }
 	when(doing_reset|| (io.writeReq.valid && io.writeReq.bits.writeEntry)){
     table.write(
-      Mux(doing_reset, reset_idx, Mux(doing_clear_u, clear_u_idx, io.writeReq.bits.setIdx)),
+      Mux(doing_reset, reset_idx, io.writeReq.bits.setIdx),
       Mux(doing_reset, 0.U.asTypeOf(new TageEntry), io.writeReq.bits.entry)
     )
 	}
@@ -288,6 +288,8 @@ Train Stage
   val t0_br_mask = io.train.bits.brMask
   val t0_cfi = io.train.bits.cfi
   val t0_pc = io.train.bits.startPc
+  val t0_instOffset = t0_pc(log2Ceil(fetchBytes)-1, 1)
+  val t0_cfiInRange = t0_cfi.valid && t0_cfi.position >= t0_instOffset
   val t0_ghist = io.train.bits.phr
   val t0_idx = fetchIdx(t0_pc)
   
@@ -305,6 +307,21 @@ Train Stage
   }
   val t0_hashIdx = VecInit(t0_hash.map(_._1))
   val t0_hashTag = VecInit(t0_hash.map(_._2))
+  // FIFO of write events; entry 0 is newest and includes all concurrent tables.
+  val ctrWriteBypass = RegInit(VecInit(Seq.fill(params.writeBypassEntries)(
+    0.U.asTypeOf(new TageWriteBypass))))
+  val t0_providerCtr = VecInit(t0_tageMeta.provider.zip(t0_btbMeta).zipWithIndex.map {
+    case ((provider, btb), idx) =>
+      val tableIdx = provider.bits
+      val bypassHits = VecInit(ctrWriteBypass.map { entry =>
+        provider.valid && entry.valid(tableIdx) &&
+          entry.idx(tableIdx) === t0_hashIdx(tableIdx) &&
+          entry.tag(tableIdx) === (t0_hashTag(tableIdx) ^ btb.bits.position)
+      })
+      val bypassCtr = Mux1H(PriorityEncoderOH(bypassHits.asUInt),
+        ctrWriteBypass.map(_.ctr(tableIdx)))
+      Mux(bypassHits.asUInt.orR, bypassCtr, t0_tageMeta.provider_ctr(idx))
+  })
     /* 
     mispred的项: 首先看是否hitBTB，如果hit 并且有provider
       1. 如果provider是最长的，那么不需要allocate
@@ -319,7 +336,7 @@ Train Stage
      */
     val t0_mispredHitTableMask = t0_btbMeta.zipWithIndex.map{case(btb,btbIdx)=>
       val mispredHit = btb.valid && btb.bits.hit  && btb.bits.attribute.isConditional&& 
-        t0_cfi.valid && t0_cfi.attribute.isConditional && 
+        t0_cfiInRange && t0_cfi.attribute.isConditional &&
         t0_cfi.mispredict && (btb.bits.position === t0_cfi.position)
       mispredHit
     }
@@ -330,7 +347,7 @@ Train Stage
     //provider是不是最长的，此时无法分配
     val t0_providerIsLongest = t0_mispredHasProvider && (t0_mispredHitTableMeta.bits === (TageTables - 1).U)
     //TODO:allocate 算法可以优化
-    val t0_needAllocate = t0_cfi.valid && t0_cfi.attribute.isConditional && t0_cfi.mispredict && !t0_providerIsLongest 
+    val t0_needAllocate = t0_cfiInRange && t0_cfi.attribute.isConditional && t0_cfi.mispredict && !t0_providerIsLongest
     val t0_canAllocate = t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).valid || !t0_mispredHitTableMask.reduce(_||_)
     //TODO：use LSFR 来随机选择表
     val t0_allocateTableIdx = Mux(
@@ -346,8 +363,9 @@ Train Stage
       
       val updateInfo = t0_tageMeta.provider.zip(t0_btbMeta).zipWithIndex.map{case((p,btb),idx)=>
         val hasProvider = t0_valid && p.valid && p.bits === i.U
+        // Entries before this request's start PC were not executed.
         val btbCondHit = t0_valid && btb.valid && btb.bits.hit &&
-          btb.bits.attribute.isConditional
+          btb.bits.attribute.isConditional && btb.bits.position >= t0_instOffset
         // A normal update is for a conditional branch before the resolved CFI.
         // If the block has no resolved CFI, every visible conditional branch is NT.
         val normalPosition = !t0_cfi.valid || btb.bits.position < t0_cfi.position
@@ -357,12 +375,12 @@ Train Stage
         val endCfiHit = hasProvider && btbCondHit && t0_cfi.valid &&
           t0_cfi.attribute.isConditional && t0_cfi.position === btb.bits.position
 
-        val normalNeedUpdateCtr = normalHit && t0_tageMeta.provider_ctr(idx) =/= 0.U
+        val normalNeedUpdateCtr = normalHit && t0_providerCtr(idx) =/= 0.U
         val normalIncCtr = normalHit && !normalNeedUpdateCtr
 
         val endCfiNeedUpdateCtr =  endCfiHit && 
-        !(t0_tageMeta.provider_ctr(idx) === 7.U && t0_cfi.taken || 
-        t0_tageMeta.provider_ctr(idx) === 0.U && !t0_cfi.taken)
+        !(t0_providerCtr(idx) === 7.U && t0_cfi.taken ||
+        t0_providerCtr(idx) === 0.U && !t0_cfi.taken)
         val endCfiIncCtr = endCfiNeedUpdateCtr && t0_cfi.taken
 
 
@@ -423,7 +441,7 @@ Train Stage
       val writeEntryEn = t0_valid && (t0_providerUpdateNeed(i) || (t0_needAllocate && t0_allocateTableIdx === i.U))
       val alloc = (t0_needAllocate && t0_canAllocate && t0_allocateTableIdx === i.U)
       val hitBtb = t0_hitBtbVec(i).reduce(_||_)
-      val hitTageCtr= Mux1H(t0_hitBtbVec(i), t0_tageMeta.provider_ctr)
+      val hitTageCtr= Mux1H(t0_hitBtbVec(i), t0_providerCtr)
       val hitTageU= Mux1H(t0_hitBtbVec(i), t0_tageMeta.provider_u)
       val hitPostion = t0_hitPosition(i)
       val hitNewCtr = Mux(t0_providerUpdateNeed(i), inc_ctr(hitTageCtr, t0_providerUpdateInc(i)), hitTageCtr)
@@ -467,6 +485,21 @@ Train Stage
         tables(i).io.writeReq.valid && tables(i).io.writeReq.bits.writeEntry,
         s"train-write-t${i}"
       )(clock, reset)
+    }
+
+    val ctrWrites = VecInit(tables.map { table =>
+      table.io.writeReq.valid && table.io.writeReq.bits.writeEntry
+    })
+    when (ctrWrites.asUInt.orR) {
+      for (entry <- 1 until params.writeBypassEntries) {
+        ctrWriteBypass(entry) := ctrWriteBypass(entry - 1)
+      }
+      ctrWriteBypass(0).valid := ctrWrites
+      for (i <- 0 until tageNTables) {
+        ctrWriteBypass(0).idx(i) := tables(i).io.writeReq.bits.setIdx
+        ctrWriteBypass(0).tag(i) := tables(i).io.writeReq.bits.entry.tag
+        ctrWriteBypass(0).ctr(i) := tables(i).io.writeReq.bits.entry.ctr
+      }
     }
 
     XSPerfAccumulate("tage_train", t0_valid)
