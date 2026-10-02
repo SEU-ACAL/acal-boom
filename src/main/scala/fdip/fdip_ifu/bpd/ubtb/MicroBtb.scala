@@ -47,13 +47,13 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p) 
 
 
   val s1_hit_ohs = btb_entries map { entry =>
-    entry.tag === s1_req_tag(tagSz-1,0)
+    entry.tag === s1_req_tag(tagSz-1,0) && entry.valid
   }
   val s1_hits      = s1_hit_ohs.reduce(_||_)
   val s1_hit_entry = PriorityEncoder(s1_hit_ohs)
   val s1_instOffset = s1_pc(log2Ceil(fetchBytes)-1,1)
   val s1_hitAfterOffset = s1_hits && btb_entries(s1_hit_entry).position >= s1_instOffset
-  io.resp.valid              := s1_valid && s1_hitAfterOffset
+  io.resp.valid              := s1_valid && s1_hitAfterOffset && btb_entries(s1_hit_entry).valid
   io.resp.bits.attribute     := Mux(s1_hits, btb_entries(s1_hit_entry).attribute, 0.U.asTypeOf(new BranchAttribute))
   io.resp.bits.cfiPosition   := Mux(s1_hits, btb_entries(s1_hit_entry).position, 0.U)
   io.resp.bits.target        := getFullTarget(s1_pc, btb_entries(s1_hit_entry).target) 
@@ -66,7 +66,7 @@ class FAMicroBTBBranchPredictor(implicit p: Parameters) extends UbtbModule()(p) 
   val t0_attribute = io.train.bits.branch.attribute
 
   val t0_hitOH = btb_entries map { entry =>
-    entry.tag === t0_tag(tagSz-1,0)
+    entry.tag === t0_tag(tagSz-1,0) && entry.valid
   }
   val t0_hitT1Victim = Wire(Bool())
   val t0_hitT1Update = Wire(Bool())

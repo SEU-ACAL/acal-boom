@@ -157,13 +157,6 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
             io.train.s2.valid -> io.train.s2.prediction.taken,
             io.s1Train.valid -> io.s1Train.taken
         ))
-    val phrWriteBits  = MuxCase(
-        0.U,
-        Seq(
-        io.train.redirect.valid -> Cat(redirect_hashHighBits, redirect_shiftBits),
-        io.train.s2.valid -> Cat(s2_hashHighBits, s2_shiftBits),
-        io.s1Train.valid -> Cat(s1_hashHighBits, s1_shiftBits)
-    ))
     val phrWriteLowBits = MuxCase(
         0.U,
         Seq(
@@ -171,6 +164,19 @@ class PHR(implicit p: Parameters) extends PHRModule with PhrHelpers {
             io.train.s2.valid -> s2_update.phrLowBits,
             io.s1Train.valid -> s1_update.phrLowBits
         ))
+    val phrWriteHashLowBits = MuxCase(
+        0.U,
+        Seq(
+            io.train.redirect.valid -> redirect_shiftBits,
+            io.train.s2.valid -> s2_shiftBits,
+            io.s1Train.valid -> s1_shiftBits
+        ))
+    // A taken path appends the low hash bits and folds the high hash bits
+    // into the low-history snapshot captured by the prediction.  Writing the
+    // raw hash high bits here drops the prior snapshot and causes every taken
+    // update to use stale history.  Keep this value shared by the array write
+    // and the same-cycle s0 bypass.
+    val phrWriteBits = Cat(phrWriteLowBits, phrWriteHashLowBits)
     val phrWritePtr = MuxCase(
         ptr,
         Seq(

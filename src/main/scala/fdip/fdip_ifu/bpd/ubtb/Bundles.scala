@@ -20,10 +20,11 @@ class FAMicroBTBPredictorIO(implicit p: Parameters) extends UbtbBundle()(p) {
   val train    = Input(Valid(new FastTrain))
 }
 
-  class MicroBTBEntry (implicit p: Parameters) extends UbtbBundle()(p) {
-    val target   = UInt(UbtbOffsetWidth.W)
-    val attribute = new BranchAttribute
-    val position = UInt(log2Ceil(fetchBytes).W)
-    val tag   = UInt(UbtbTagWidth.W)
-    val ctr   = UInt(2.W)
-  }
+class MicroBTBEntry (implicit p: Parameters) extends UbtbBundle()(p) {
+  val target   = UInt(UbtbOffsetWidth.W)
+  val attribute = new BranchAttribute
+  val position = UInt(log2Ceil(fetchBytes).W)
+  val tag   = UInt(UbtbTagWidth.W)
+  val ctr   = UInt(2.W)
+  def valid = !(ctr===0.U)
+}
