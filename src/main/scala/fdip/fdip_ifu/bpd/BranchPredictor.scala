@@ -17,7 +17,6 @@ import boom.fdip.ifu.bpd.ubtb._
 import boom.fdip.ifu.bpd.l1btb._
 import boom.fdip.ifu.bpd.tage._
 import boom.fdip.ifu.bpd.ras._
-//TODO: add taken cmp
 class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
 {
   val io = IO(new Bundle {
@@ -334,9 +333,15 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
     io.fromFtq.ras_updateInfo.valid        -> redirect_ras_newState,
     (s2_isCallOrRet)       -> s2_predRasState
   )) 
-  //redirect and clear
-  //其实这里还需要去做位置判断
-  s2_redirect                 := io.toFtq.resp.bits.f2.valid&&(s1_previous_pred_info.valid)&&(s1_previous_pred_info.pred.target=/=io.toFtq.resp.bits.f2.pred.target)&&s2_valid
+  // A taken branch can target the sequential next fetch block, so matching
+  // next PCs do not imply matching predictions. Correct the FTQ entry and
+  // speculative history when direction or the taken CFI position changes too.
+  val s2_directionDiff = s1_previous_pred_info.pred.taken =/= s2_prediction.taken
+  val s2_positionDiff = s1_previous_pred_info.pred.taken && s2_prediction.taken &&
+    (s1_previous_pred_info.pred.cfiPosition =/= s2_prediction.cfiPosition)
+  val s2_targetDiff = s1_previous_pred_info.pred.target =/= s2_prediction.target
+  s2_redirect := io.toFtq.resp.bits.f2.valid && s1_previous_pred_info.valid &&
+    s2_valid && (s2_directionDiff || s2_positionDiff || s2_targetDiff)
  
   s1_clear                    := io.fromFtq.redirect_val || (s2_redirect) 
   s2_clear                    := io.fromFtq.redirect_val
@@ -397,14 +402,11 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   phr.io.train.bpuTrain.bits.bpuTraincfi := io.fromFtq.train.bits.cfi
 
 
-  // f2 can override f1 either because its predicted next PC differs or to
-  // repair speculative history. For a target redirect, classify the f1/f2
-  // disagreement by direction, terminal CFI position, then target-only.
+  // Classify f1/f2 overrides by direction, taken CFI position, then target.
   val bpu_override = s2_redirect 
-  val bpu_override_direction = s2_redirect &&
-    (s1_previous_pred_info.pred.taken =/= s2_prediction.taken)
+  val bpu_override_direction = s2_redirect && s2_directionDiff
   val bpu_override_position = s2_redirect && !bpu_override_direction &&
-    (s1_previous_pred_info.pred.cfiPosition =/= s2_prediction.cfiPosition)
+    s2_positionDiff
   val bpu_override_target = s2_redirect && !bpu_override_direction &&
     !bpu_override_position
 
@@ -418,7 +420,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   XSPerfSeqAccumulate("bpu_override", bpu_override, Seq(
     ("total", true.B),
     ("effective", !s2_clear),
-    ("target_redirect", s2_redirect),
+    ("target_redirect", s2_redirect && s2_targetDiff),
     ("direction", bpu_override_direction),
     ("position", bpu_override_position),
     ("target_only_change", bpu_override_target)
