@@ -12,7 +12,7 @@ import boom.fdip.ifu.bpd.ubtb.BoomFAMicroBTBParams
 import boom.fdip.ifu.bpd.tage.BoomTageParams
 import boom.fdip.ifu.bpd.tage.TagePredictMeta
 import boom.fdip.ifu.bpd.l1btb.BTBPredictMeta
-import boom.fdip.ifu.bpd.ras.RasState
+import boom.fdip.ifu.bpd.ras.RasMeta
 class Prediction(implicit p: Parameters) extends BoomBundle()(p)
   with HasBoomFrontendParameters
 {
@@ -95,7 +95,7 @@ class BranchPredictionLiteBundle(implicit p: Parameters) extends BoomBundle()(p)
   val phrMeta       = new PhrMeta
   val pred        = new Prediction
   val meta        = Output(new BranchPredictionMeta)
-  val rasState    = new RasState
+  val rasMeta     = new RasMeta
   // val lhist       = Output(UInt(localHistoryLength.W))
 
 
@@ -227,6 +227,8 @@ class RasUpdateInfo(implicit p: Parameters) extends BoomBundle()(p)
   val attribute = new BranchAttribute
   val startPc = UInt(vaddrBitsExtended.W)
   val cfiPosition = UInt(log2Ceil(fetchBytes).W)
-  val rasState = new RasState
+  val cfiValid = Bool()
+  val taken = Bool()
+  val rasMeta = new RasMeta
 
 }

@@ -115,7 +115,6 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   val s0_pc             = WireInit(io.reset_vector)
   val s0_valid          = WireInit(false.B)
   val s0_phr            = phr.io.s0_phr
-  val s0_rasState       = WireInit((0.U).asTypeOf(new RasState))
   val bpdF0Valid = s0_valid
   val bpdF0Pc    = s0_pc
 
@@ -144,7 +143,6 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   val s1_clear          = WireInit(false.B)
   val s1_valid          = RegInit(false.B)
 
-  val s1_rasState       = RegEnable(s0_rasState,s0_fire)
  
 
   val s1_finalPrediction = WireInit(s1_prediction)
@@ -179,10 +177,6 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   val s2_clear          = WireInit(false.B)
 
 
-  val s2_newRasStateHold = RegInit((0.U).asTypeOf(new RasState))
-  val s2_newRasStateHoldValid = RegInit(false.B)
-  val s2_newRasState = Wire(new RasState)
-  val s2_rasState       = RegEnable(s2_newRasState,s1_fire)
   val s2_tageResp = tage.io.tage_pred
   val s2_btbResp  = btb.io.resp
   val s2_jumpTakenVec = s2_btbResp.map{ btb=>
@@ -222,22 +216,13 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
     !s2_taken)
   })
 
-  val s2_useRas = s2_firstTakenBranch.valid && s2_firstTakenBranch.bits.attribute.isReturn && useRAS.B
-  val s2_isCallOrRet = s2_firstTakenBranch.valid && (s2_firstTakenBranch.bits.attribute.isCall || s2_firstTakenBranch.bits.attribute.isReturn)
+  val s2_useRas = s2_firstTakenBranch.valid && s2_firstTakenBranch.bits.attribute.hasPop && useRAS.B
   val s2_target = MuxCase(nextFetch(s2_pc),
     Seq(
-      s2_useRas -> ras.io.read_addr,
+      s2_useRas -> ras.io.topRetAddr,
       s2_firstTakenBranch.valid -> s2_firstTakenBranch.bits.target
     )
   )
-
-  val s2_predRasState        = WireInit(s2_rasState)
-  when(s2_useRas){
-    s2_predRasState.idx := WrapDec(s2_rasState.idx, nRasEntries)
-  }.elsewhen(s2_firstTakenBranch.valid && s2_firstTakenBranch.bits.attribute.isCall){
-    s2_predRasState.idx := WrapInc(s2_rasState.idx, nRasEntries)
-  }
-  s2_predRasState.top       := ras.io.read_addr
 
   val s2_prediction = Wire(new Prediction)
   s2_prediction.taken       := s2_taken
@@ -289,31 +274,6 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
 
 
   val s1_previous_pred_info    = RegNext(io.toFtq.resp.bits.f1)
-  // Keep a repaired RAS state until the stalled s1 packet can advance.  The
-  // repair condition is only a pulse, while s1_valid may remain asserted.
-  val s2_rasRepair = s2_redirect
-
-  val redirect_ras_repair = io.fromFtq.ras_updateInfo.valid
-  val redirect_rasState = io.fromFtq.ras_updateInfo.bits.rasState
-  val redirect_ras_attribute = io.fromFtq.ras_updateInfo.bits.attribute
-  val redirect_ras_cfiPosition = io.fromFtq.ras_updateInfo.bits.cfiPosition
-  val redirect_ras_startPc = io.fromFtq.ras_updateInfo.bits.startPc
-  val redirect_ras_newState = WireInit(redirect_rasState)
-  redirect_ras_newState.idx := Mux(redirect_ras_attribute.isCall,WrapInc(redirect_rasState.idx, nRasEntries),WrapDec(redirect_rasState.idx, nRasEntries))
-
-
-  when (!s1_valid || s1_fire) {
-    s2_newRasStateHoldValid := false.B
-  }
-  when (s2_rasRepair && s1_valid && !s1_fire) {
-    s2_newRasStateHold      := s2_predRasState
-    s2_newRasStateHoldValid := true.B
-  }
-  s2_newRasState := Mux(
-    s2_rasRepair,
-    s2_predRasState,
-    Mux(s2_newRasStateHoldValid, s2_newRasStateHold, s1_rasState))
-
   dontTouch(s1_replay)
   s0_pc                 := MuxCase(io.reset_vector,
   Seq(
@@ -327,12 +287,6 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   s0_valid              := (RegNext(reset.asBool) && !reset.asBool) || io.fromFtq.redirect_val ||
                            s2_redirect || s1_valid || s1_replay 
 
-  s0_rasState           := MuxCase((0.U).asTypeOf(new RasState),
-  Seq(
-    (RegNext(reset.asBool) && !reset.asBool) -> (0.U).asTypeOf(new RasState),
-    io.fromFtq.ras_updateInfo.valid        -> redirect_ras_newState,
-    (s2_isCallOrRet)       -> s2_predRasState
-  )) 
   // A taken branch can target the sequential next fetch block, so matching
   // next PCs do not imply matching predictions. Correct the FTQ entry and
   // speculative history when direction or the taken CFI position changes too.
@@ -348,19 +302,23 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
 
   io.toFtq.resp.bits.f1.hasRedirect := false.B
   io.toFtq.resp.bits.f2.hasRedirect := (s2_redirect) && (! s2_clear)
-  //TODO:fix RAS
-  ras.io.read_idx    := s1_rasState.idx
-  ras.io.write_valid := s2_valid && useRAS.B && s2_taken && s2_firstTakenBranch.bits.attribute.isCall || redirect_ras_repair
-  ras.io.write_addr  := Mux(redirect_ras_repair && redirect_ras_attribute.isCall,redirect_ras_startPc + (redirect_ras_cfiPosition<<1.U) + 2.U,
-      Mux(redirect_ras_repair && redirect_ras_attribute.isReturn,redirect_rasState.top,s2_alignPc + (s2_prediction.cfiPosition<<1.U) + 2.U))
-  ras.io.write_idx   := Mux(redirect_ras_repair, redirect_rasState.idx, s2_rasState.idx)
+  // RAS operations happen once, at the last prediction stage. S1 replay and
+  // S2 correction therefore cannot apply an operation twice. The live stack
+  // metadata is the state before this S2 packet's operation.
+  //maybe we can read it in s1 stage
+  ras.io.specIn.valid := s2_fire && !s2_clear && s2_taken && s2_firstTakenBranch.valid
+  ras.io.specIn.bits.startPc := s2_pc
+  ras.io.specIn.bits.cfiPosition := s2_prediction.cfiPosition
+  ras.io.specIn.bits.attribute := s2_prediction.attribute
+  ras.io.redirect := io.fromFtq.ras_updateInfo
+  ras.io.commit := io.fromFtq.ras_commitInfo
 
 
   io.toFtq.resp.bits.f1.pred    := s1_finalPrediction.bits
-  io.toFtq.resp.bits.f1.rasState := s1_rasState
+  io.toFtq.resp.bits.f1.rasMeta := ras.io.meta
 
 
-  io.toFtq.resp.bits.f2.rasState := s2_rasState
+  io.toFtq.resp.bits.f2.rasMeta := ras.io.meta
   io.toFtq.resp.bits.f2.pred    := s2_prediction
   io.toFtq.resp.bits.f2.meta     := bpdMeta
 

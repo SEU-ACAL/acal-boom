@@ -13,7 +13,6 @@ import boom.fdip.ifu.bpd.ubtb.BoomFAMicroBTBParams
 import boom.fdip.ifu.bpd.tage.BoomTageParams
 import boom.fdip.ifu.bpd.tage.TagePredictMeta
 import boom.fdip.ifu.bpd.l1btb.BTBPredictMeta
-import boom.fdip.ifu.bpd.ras.RasState
 class PhrPtr(entries: Int)(implicit p: Parameters)
   extends CircularQueuePtr[PhrPtr](entries) {
   override protected def make(f: Bool, v: UInt): PhrPtr = {

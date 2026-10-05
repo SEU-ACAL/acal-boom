@@ -457,8 +457,14 @@ class ALUUnit(isJmpUnit: Boolean = false, numStages: Int = 1, dataWidth: Int)(im
                           Mux(is_jal , CFI_JAL, CFI_X)))
   brinfo.taken          := is_taken
   brinfo.pc_sel         := pc_sel
-  brinfo.is_call        := (is_jal || is_jalr) && uop.ldst===1.U
-  brinfo.is_ret         := is_jalr && uop.lrs1 === 5.U && !brinfo.is_call
+  // Match the RISC-V return-address stack hints used by the frontend
+  // BranchAttribute decoder: x1 (ra) and x5 are both link registers.
+  // A JALR pops the RAS when rs1 is a link register and rd differs from it;
+  // when rd is also a link register the same instruction is PopAndPush.
+  val is_link_dest = uop.ldst === 1.U || uop.ldst === 5.U
+  val is_link_src  = uop.lrs1 === 1.U || uop.lrs1 === 5.U
+  brinfo.is_call    := (is_jal || is_jalr) && is_link_dest
+  brinfo.is_ret     := is_jalr && is_link_src && (uop.ldst =/= uop.lrs1)
   
   brinfo.target_offset := target_offset
   io.brinfo := brinfo
