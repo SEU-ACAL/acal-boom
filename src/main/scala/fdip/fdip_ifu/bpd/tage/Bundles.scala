@@ -32,17 +32,23 @@ class TageTableReadResp(params: BoomTageParams = BoomTageParams())(implicit p: P
 class TageTableWriteReq(params: BoomTageParams = BoomTageParams())(implicit p: Parameters)
   extends TageBundle()(p) {
   val setIdx      = UInt(log2Ceil(params.tableInfo.head._1).W)
-  val writeEntry  = Bool()
-  val writeUseful = Bool()
-  val entry       = new TageEntry(params)
-  val u           = UInt(2.W)
+  val wayMask     = Vec(TageNways, Bool())
+  val writeEntry  = Vec(TageNways, Bool())
+  val writeUseful = Vec(TageNways, Bool())
+  val entry       = Vec(TageNways, new TageEntry(params))
+  val u           = Vec(TageNways, UInt(2.W))
 }
 
 class TageWriteBypass(implicit p: Parameters) extends TageBundle()(p) {
-  val valid = Vec(TageTables, Bool())
-  val idx = Vec(TageTables, UInt(log2Ceil(tageParams.tableInfo.map(_._1).max).W))
-  val tag = Vec(TageTables, UInt(TageTagWidth.W))
-  val ctr = Vec(TageTables, UInt(3.W))
+  // A table can write more than one way in one training cycle.  Keep the
+  // bypass key/value per way so a write to way 1 cannot be mistaken for way 0.
+  val valid = Vec(TageTables, Vec(TageNways, Bool()))
+  val idx = Vec(TageTables, Vec(TageNways,
+    UInt(log2Ceil(tageParams.tableInfo.map(_._1).max).W)))
+  val tag = Vec(TageTables, Vec(TageNways, UInt(TageTagWidth.W)))
+  val ctr = Vec(TageTables, Vec(TageNways, UInt(3.W)))
+  val uValid = Vec(TageTables, Vec(TageNways, Bool()))
+  val u = Vec(TageTables, Vec(TageNways, UInt(2.W)))
 }
 
 class TagePredictMeta(val nTables: Int)(implicit p: Parameters) extends TageBundle()(p) {
@@ -50,7 +56,8 @@ class TagePredictMeta(val nTables: Int)(implicit p: Parameters) extends TageBund
   val alt_differs  = Vec(predWidth, Bool())
   val provider_u   = Vec(predWidth, UInt(2.W))
   val provider_ctr = Vec(predWidth, UInt(3.W))
-  val allocate     = Vec(predWidth, Valid(UInt((nTables).W)))
+  val provider_wayMask = Vec(predWidth, UInt(TageNways.W))
+  val allocate     = Vec(predWidth, Valid(Vec(nTables,UInt(TageNways.W))))
 }
 
 class TagePrediction(implicit p: Parameters) extends TageBundle()(p) {

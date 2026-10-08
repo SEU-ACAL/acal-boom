@@ -222,8 +222,8 @@ class BoomIFU(implicit p: Parameters) extends BoomModule()(p)
   val f3_target_redirect= WireInit(false.B)
   val f3_notCfi_taken_redirect = WireInit(false.B)
   val f3_isNot_valid_redirect = WireInit(false.B)
-  // val f3_
-  // val f3_
+
+
   val f3_fetch_bundle   = Wire(new FetchBundle)
   val f3_ctrl_mask      = WireInit(f3_br_mask.asUInt | f3_jal_mask.asUInt | f3_jalr_mask.asUInt)
   val f3_has_ctrl       = WireInit(f3_br_mask.reduce(_||_) || f3_jal_mask.reduce(_||_) ||  f3_jalr_mask.reduce(_||_))
@@ -388,7 +388,8 @@ class BoomIFU(implicit p: Parameters) extends BoomModule()(p)
   io.toFtq.predecode_infos.valid                          := f3_valid && !f3_flush
   io.toFtq.predecode_infos.bits.br_infos.cfiPosition.valid    := f3_valid && f3_cfi_valid
   io.toFtq.predecode_infos.bits.br_infos.cfiPosition.bits     := f3_cfiPosition
-  io.toFtq.predecode_infos.bits.br_infos.cfi_taken        := f3_redirect_type === jal_fault ||  f3_redirect_type === target_fault
+  io.toFtq.predecode_infos.bits.br_infos.cfi_taken        := f3_valid && f3_cfi_valid
+
   io.toFtq.predecode_infos.bits.br_infos.cfi_mispredicted :=  false.B
   //TODO: check it
   io.toFtq.predecode_infos.bits.br_infos.attribute.branchType := Mux(

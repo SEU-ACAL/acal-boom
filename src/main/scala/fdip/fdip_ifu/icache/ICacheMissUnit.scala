@@ -28,6 +28,7 @@ import boom.fdip.ifu._
 
 import boom.fdip.common._
 import boom.fdip.util._
+import boom.perf._
 import freechips.rocketchip.regmapper.RRTest0Map.re
 
 class ICacheMSHR(edge: TLEdgeOut,ID:Int)(implicit p: Parameters) extends BoomModule with HasBoomFrontendParameters{
@@ -211,6 +212,34 @@ class ICacheMissUnit(edge: TLEdgeOut,refillCycles:Int)(implicit p: Parameters) e
 
     //TODO；add pre-fetch
     io.prefetch_req.ready := !prefetch_mshrFull || prefetchHit
+
+    val perfSameFetch = io.fetch_req.valid &&
+      io.prefetch_req.bits.blkPaddr === io.fetch_req.bits.blkPaddr &&
+      io.prefetch_req.bits.vSetIdx === io.fetch_req.bits.vSetIdx
+    val perfPrefetchAllocated = pre_mshrs.map(_.io.req.fire).reduce(_ || _)
+    XSPerfSeqAccumulate("prefetch_mshr", true.B, Seq(
+      ("req_valid", io.prefetch_req.valid),
+      ("req_fire", io.prefetch_req.fire),
+      ("merge", io.prefetch_req.fire && prefetchHit),
+      ("same_fetch", io.prefetch_req.fire && !prefetchHit && perfSameFetch),
+      ("same_fetch_wait", io.prefetch_req.fire && !prefetchHit && perfSameFetch &&
+        !io.fetch_req.fire),
+      ("allocate", perfPrefetchAllocated),
+      ("stall", io.prefetch_req.valid && !io.prefetch_req.ready),
+      ("full", pre_mshrs.map(_.io.busy).reduce(_ && _))
+    ))
+    XSPerfAccumulate("prefetch_mshr_busy_sum", PopCount(pre_mshrs.map(_.io.busy)))
+    // The existing icache_prefetch counter counts these lower-level requests,
+    // not FTQ requests or cache-hit prefetch lookups. Demand has arbiter priority.
+    XSPerfSeqAccumulate("prefetch_l2", true.B, Seq(
+      ("valid", prefetchAcquireArb.io.out.valid),
+      ("fire", prefetchAcquireArb.io.out.fire),
+      ("wait_demand", prefetchAcquireArb.io.out.valid && acquireArb.io.out.valid),
+      ("wait_bus", prefetchAcquireArb.io.out.valid && !acquireArb.io.out.valid &&
+        !io.acquire.ready),
+      ("refill", respDoneReg && respIdReg >= nMSHRs.U &&
+        respIdReg < (nMSHRs + nPrefetchMSHRs).U)
+    ))
 
 
 

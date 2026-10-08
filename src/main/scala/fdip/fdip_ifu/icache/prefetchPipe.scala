@@ -7,6 +7,7 @@ import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.{TLBReq, TLBResp}
 import boom.fdip.common._
 import boom.fdip.util._
+import boom.perf._
 
 /*
  * S0 accepts one FTQ request. S1 holds that transaction until its ITLB/meta
@@ -60,7 +61,11 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
 
   /* A fresh FTQ request drives both initial requests. s0_fire is the single
    * acceptance event for the S0-to-S1 transfer, after both endpoints accept. */
-  s1_ready := !s1_valid && (s1_state === S1FsmState.Idle) && !io.flush
+  // A completing S1 transaction releases its slot in this cycle. Capture the
+  // next S0 request at the same edge to sustain one lookup per cycle.
+  s1_ready := !io.flush && (
+    (!s1_valid && (s1_state === S1FsmState.Idle)) || s1_fire
+  )
   private val s0_issue = io.fromFtq.valid && s1_ready
   io.fromFtq.ready := s1_ready && io.tlbReq.ready && io.metaRead.req.ready
   s0_fire := io.fromFtq.fire
@@ -90,7 +95,9 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
   io.metaRead.req.bits.vSetIdx := Mux(s1_metaNeedResend, s1_vSetIdx, s0_vSetIdx)
 
   private val s1_metaRespValid = RegNext(io.metaRead.req.fire, false.B)
-  private val s1_metaFresh = io.metaRead.req.fire
+  // Only a replay refreshes the current S1 metadata. A new S0 read belongs to
+  // the next transaction and must not hide the retiring S1's retained result.
+  private val s1_metaReplayFire = s1_metaNeedResend && io.metaRead.req.fire
 
   private val s1_metaPTag = Mux(s1_tlbHit,
     io.tlbResp.paddr(tagBits + untagBits - 1, untagBits), s1_pTag)
@@ -104,7 +111,7 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
   private val s1_metaBaseWaymask = Mux(
     s1_metaRespValid,
     s1_sramWaymask,
-    Mux(s1_metaRegValid && !s1_metaFresh, s1_metaRegWaymask, 0.U))
+    Mux(s1_metaRegValid && !s1_metaReplayFire, s1_metaRegWaymask, 0.U))
   // Source 1: refill/MISS response bypass. A refill of the same tag makes its
   // way valid; replacing the way with another tag invalidates the old hit.
   private val s1_missSetMatch = s1_valid && s1_tlbFinish && io.missResp.valid &&
@@ -144,9 +151,9 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
     s1_metaRegValid := false.B
     s1_missRegValid := false.B
   }.otherwise {
-    // A new SRAM read starts a fresh base value for this S1 request. A refill
+    // A replay starts a fresh base value for this S1 request. A refill
     // arriving in the same/next cycle can then repopulate the register.
-    when (io.metaRead.req.fire) {
+    when (s1_metaReplayFire) {
       s1_metaRegValid := false.B
     }
     when (s1_tlbHit && s1_valid) {
@@ -180,7 +187,11 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
   private val s1_waymaskForEnq = s1_metaWaymask
   private val s1_pTagForEnq = Mux(s1_tlbHit,
     io.tlbResp.paddr(tagBits + untagBits - 1, untagBits), s1_pTag)
-  private val s1_wayCanEnq = s1_valid && s1_tlbFinish && s1_metaFinish &&
+  // TLB replay finishes in ItlbResend, where WayLookup cannot enqueue. In
+  // Idle/EnqWay its result is already registered. Keep completion independent
+  // of this cycle's TLB request so s1_fire can safely drive s1_ready.
+  private val s1_wayCanEnq = s1_valid && s1_tlbDone &&
+    (s1_metaDone || s1_metaRespValid) &&
     ((s1_state === S1FsmState.Idle) || (s1_state === S1FsmState.EnqWay))
   private val s1_wayFire = io.wayLookupWrite.fire
 
@@ -270,4 +281,48 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
     s1_nextState := S1FsmState.Idle
   }
   s1_state := s1_nextState
+
+  // Separate accepted FTQ transactions from cycles waiting at the entrance.
+  // An occupied S1 blocks S0 only when it cannot complete in this cycle.
+  XSPerfSeqAccumulate("prefetch_s0", io.fromFtq.valid, Seq(
+    ("fire", s0_fire),
+    ("flush_blocked", io.flush),
+    ("stall_s1", !io.flush && !s1_ready),
+    ("stall_itlb", s1_ready && !io.tlbReq.ready),
+    ("stall_meta", s1_ready && io.tlbReq.ready && !io.metaRead.req.ready)
+  ))
+
+  val perfS1WaitTlb = !s1_tlbFinish
+  val perfS1WaitMeta = s1_tlbFinish && !s1_metaFinish
+  val perfS1WaitWay = s1_tlbFinish && s1_metaFinish &&
+    io.wayLookupWrite.valid && !io.wayLookupWrite.ready
+  val perfS1WaitS2 = s1_tlbFinish && s1_metaFinish && !s2_ready &&
+    ((s1_state === S1FsmState.EnterS2) || s1_wayFire)
+  XSPerfSeqAccumulate("prefetch_s1", s1_valid && !io.flush, Seq(
+    ("advance", s1_fire),
+    ("wait_itlb", perfS1WaitTlb),
+    ("wait_meta", perfS1WaitMeta),
+    ("wait_waylookup", perfS1WaitWay),
+    ("wait_s2", perfS1WaitS2),
+    ("wait_control", !s1_fire && !perfS1WaitTlb && !perfS1WaitMeta &&
+      !perfS1WaitWay && !perfS1WaitS2)
+  ))
+  XSPerfSeqAccumulate("prefetch_s2", s2_valid && !io.flush, Seq(
+    ("hit", s2_hit),
+    ("miss_valid", io.missReq.valid),
+    ("miss_fire", io.missReq.fire),
+    ("miss_stall", io.missReq.valid && !io.missReq.ready)
+  ))
+  XSPerfSeqAccumulate("prefetch_itlb", io.tlbReq.fire, Seq(
+    ("req", true.B),
+    ("miss", io.tlbResp.miss)
+  ))
+  XSPerfSeqAccumulate("prefetch_waylookup", io.wayLookupWrite.fire, Seq(
+    ("hit", s1_waymaskForEnq.orR),
+    ("miss", !s1_waymaskForEnq.orR)
+  ))
+  XSPerfSeqAccumulate("prefetch_flush", io.flush, Seq(
+    ("s1", s1_valid),
+    ("s2", s2_valid)
+  ))
 }

@@ -288,10 +288,6 @@ val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
   (custom_csrs.csrs zip csr.io.customCSRs).map { case (lhs, rhs) => lhs <> rhs }
 
   if (p(BoomXSPerfEnableKey)) {
-    val perfCtrl = Wire(new LogPerfIO)
-    perfCtrl.clock := clock
-    perfCtrl.reset := reset.asBool
-
     XSPerfAccumulate("cycles", 1.U)
     XSPerfAccumulate("commit_instr", PopCount(rob.io.commit.arch_valids))
     XSPerfAccumulate("branch_resolved", PopCount(brinfos.map(_.valid)))
@@ -306,7 +302,6 @@ val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
     XSPerfAccumulate("ftq_full", io.ifu.perf.ftq_full)
     XSPerfAccumulate("ftq_metadata_conflict", io.ifu.perf.ftq_meta_conflict)
     XSPerfAccumulate("ftq_redirect_conflict", io.ifu.perf.ftq_redirect_conflict)
-    XSLog.collect(perfCtrl)
   }
 
   //val icache_blocked = !(io.ifu.fetchpacket.valid || RegNext(io.ifu.fetchpacket.valid))
@@ -723,6 +718,69 @@ val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
   val dis_stalls = WireInit(VecInit(dis_hazards.scanLeft(false.B) ((s,h) => s || h).takeRight(coreWidth)))
   dis_fire := dis_valids zip dis_stalls map {case (v,s) => v && !s}
   dis_ready := !dis_stalls.last
+
+  if (p(BoomXSPerfEnableKey)) {
+    // Attribute the earliest hazardous valid slot, then choose one reason by
+    // explicit priority. Other slots/reasons may also be blocked that cycle.
+    def accumulateFirstCause(prefix: String, valid: Bool, causes: Seq[(String, Bool)]): Unit = {
+      val prior = causes.map(_._2).scanLeft(false.B)(_ || _)
+      XSPerfSeqAccumulate(prefix, valid,
+        causes.zip(prior).map { case ((name, cause), seen) => (name, cause && !seen) } :+
+          ("other", !prior.last))
+    }
+    val redirectStall = brupdate.b1.mispredict_mask =/= 0.U ||
+      brupdate.b2.mispredict || io.ifu.redirect_flush
+    val decodePacketValid = io.ifu.fetchpacket.valid
+    val decodeStall = decodePacketValid && !dec_ready
+    val decodeProgress = dec_fire.asUInt.orR
+    val decodeHazard = dec_hazards.reduce(_ || _)
+    val decodeFirstSlot = PriorityEncoder(VecInit(dec_hazards).asUInt)
+
+    XSPerfSeqAccumulate("decode", true.B, Seq(
+      ("packet_valid", decodePacketValid),
+      ("packet_release", io.ifu.fetchpacket.fire),
+      ("packet_stall", decodeStall),
+      ("partial_progress", decodeStall && decodeProgress),
+      ("no_progress", decodeStall && !decodeProgress),
+      ("stall_no_hazard", decodeStall && !decodeHazard),
+      ("ftq_full_no_input", io.ifu.perf.ftq_full && !decodePacketValid),
+      ("ftq_full_no_progress", io.ifu.perf.ftq_full && decodeStall && !decodeProgress)
+    ))
+    XSPerfAccumulate("decode_uops", PopCount(dec_fire))
+    accumulateFirstCause("decode_block", decodeStall && decodeHazard, Seq(
+      ("redirect", redirectStall),
+      ("rollback", rob.io.commit.rollback),
+      ("exception", dec_xcpt_stall),
+      ("dispatch", !dis_ready),
+      ("branch_tag", branch_mask_full(decodeFirstSlot))
+    ))
+
+    val dispatchValid = dis_valids.asUInt.orR
+    val dispatchBlocked = dispatchValid && !dis_ready
+    val dispatchProgress = dis_fire.asUInt.orR
+    val dispatchFirstSlot = PriorityEncoder(VecInit(dis_hazards).asUInt)
+    XSPerfSeqAccumulate("dispatch", true.B, Seq(
+      ("valid", dispatchValid),
+      ("all_advance", dispatchValid && dis_ready),
+      ("blocked", dispatchBlocked),
+      ("partial_progress", dispatchBlocked && dispatchProgress),
+      ("no_progress", dispatchBlocked && !dispatchProgress),
+      ("ftq_full_blocked", io.ifu.perf.ftq_full && dispatchBlocked)
+    ))
+    XSPerfAccumulate("dispatch_uops", PopCount(dis_fire))
+    accumulateFirstCause("dispatch_block", dispatchBlocked, Seq(
+      ("redirect", redirectStall),
+      ("rob", !rob.io.ready),
+      ("rename", ren_stalls(dispatchFirstSlot)),
+      ("ldq", io.lsu.ldq_full(dispatchFirstSlot) && dis_uops(dispatchFirstSlot).uses_ldq),
+      ("stq", io.lsu.stq_full(dispatchFirstSlot) && dis_uops(dispatchFirstSlot).uses_stq),
+      ("issue", !dispatcher.io.ren_uops(dispatchFirstSlot).ready),
+      ("serialize", VecInit(wait_for_empty_pipeline)(dispatchFirstSlot) ||
+        VecInit(dis_prior_slot_unique.take(coreWidth))(dispatchFirstSlot)),
+      ("rocc", VecInit(wait_for_rocc)(dispatchFirstSlot) ||
+        VecInit(dis_rocc_alloc_stall)(dispatchFirstSlot))
+    ))
+  }
 
   dontTouch(dis_stalls)
   //-------------------------------------------------------------
@@ -1567,5 +1625,13 @@ PERFORMANCE MONITORING
     dontTouch(io.trace)
   } else {
     io.ifu.debug_ftq_idx := DontCare
+  }
+
+  if (p(BoomXSPerfEnableKey)) {
+    // Collect after all core counters register, including decode/dispatch.
+    val perfCtrl = Wire(new LogPerfIO)
+    perfCtrl.clock := clock
+    perfCtrl.reset := reset.asBool
+    XSLog.collect(perfCtrl)
   }
 }

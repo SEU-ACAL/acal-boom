@@ -237,6 +237,7 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
     val ftq_redirect_conflict = Output(Bool())
     val ftq_meta_conflict     = Output(Bool())
     val ftq_full              = Output(Bool())
+    val main_wait_waylookup   = Input(Bool())
     val debug_ftq_idx  = Input(Vec(coreWidth, UInt((log2Ceil(ftqSz)+1).W)))
     val debug_fetch_pc = Output(Vec(coreWidth, UInt(vaddrBitsExtended.W)))
   })
@@ -636,6 +637,49 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   io.toPrefetch.bits.fetch_pc := pc_mem(ftqMemIdx(pf_ptr)).start_pc
   io.toPrefetch.bits.mask     := pc_mem(ftqMemIdx(pf_ptr)).mask
 
+  // A prefetch handshake need not advance pf_ptr: it is held when ahead of
+  // ifu_ptr. Count these repeated requests separately from pointer progress.
+  val prefetchEmpty = isEmpty(pf_ptr, bpu_ptr)
+  val prefetchRedirectBlocked = io.fromBackend.redirect_val || io.fromIfu.redirect_from_fetch ||
+    (bpu_s2_redirect && !isBefore(io.fromBpu.resp.bits.f2.ftq_idx, pf_ptr))
+  val prefetchAheadOfIfu = isAfter(pf_ptr, ifu_ptr)
+  val prefetchAdvance = io.toPrefetch.fire && !prefetchAheadOfIfu
+  val prefetchRepeat = io.toPrefetch.fire && prefetchAheadOfIfu
+  XSPerfSeqAccumulate("ftq_prefetch", true.B, Seq(
+    ("valid", io.toPrefetch.valid),
+    ("fire", io.toPrefetch.fire),
+    ("stall", io.toPrefetch.valid && !io.toPrefetch.ready),
+    ("ptr_advance", prefetchAdvance),
+    ("repeat", prefetchRepeat)
+  ))
+  // These five mutually exclusive outcomes sum to ftq_full cycles.
+  XSPerfSeqAccumulate("ftq_full_prefetch", full, Seq(
+    ("empty", prefetchEmpty),
+    ("redirect", !prefetchEmpty && prefetchRedirectBlocked),
+    ("stall", io.toPrefetch.valid && !io.toPrefetch.ready),
+    ("advance", prefetchAdvance),
+    ("repeat", prefetchRepeat)
+  ))
+  XSPerfSeqAccumulate("ftq_full_fetch", full, Seq(
+    ("valid", io.toICache.req.valid),
+    ("fire", io.toICache.req.fire),
+    ("stall", io.toICache.req.valid && !io.toICache.req.ready),
+    ("ifu_caught_up", isEmpty(ifu_ptr, bpu_ptr)),
+    ("commit_wait", commit_ptr === deq_ptr),
+    ("commit_advance", do_update_commit)
+  ))
+  // The five prefetch outcomes are exclusive and sum to total. FTQ full and
+  // F2 redirect are separate cross counters and can overlap these outcomes.
+  XSPerfSeqAccumulate("ftq_waylookup_wait", io.main_wait_waylookup, Seq(
+    ("total", true.B),
+    ("ftq_full", full),
+    ("prefetch_empty", prefetchEmpty),
+    ("prefetch_redirect", !prefetchEmpty && prefetchRedirectBlocked),
+    ("prefetch_stall", io.toPrefetch.valid && !io.toPrefetch.ready),
+    ("prefetch_advance", prefetchAdvance),
+    ("prefetch_repeat", prefetchRepeat),
+    ("bpu_f2_redirect", bpu_s2_redirect)
+  ))
 /* -------------------------------------------------------------------------- */
 /*                                   To IFU                                   */
 /* -------------------------------------------------------------------------- */

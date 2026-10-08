@@ -6,6 +6,7 @@ import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.{TLBReq, TLBResp}
 import boom.fdip.common._
 import boom.fdip.util._
+import boom.perf._
 
 /*
 1. s0阶段先从waylookup读出metadata，发出读数据请求
@@ -105,4 +106,19 @@ class MainPipe(implicit p: Parameters) extends ICacheModule{
 
     s1_fire := s1_valid && s1_fetchFinish && io.toIFU.ready
     dontTouch(s1_fire)
+
+    // The main pipeline consumes WayLookup entries. These exclusive causes
+    // explain why a full WayLookup cannot drain to IFU.
+    XSPerfSeqAccumulate("icache_main_s0", io.fromFtq.valid && !io.flush, Seq(
+        ("fire", s0_fire),
+        ("wait_waylookup", !io.wayLookupToMainPipe.valid),
+        ("wait_s1", io.wayLookupToMainPipe.valid && !s1_ready),
+        ("wait_data_port", io.wayLookupToMainPipe.valid && s1_ready &&
+            !io.mainPipeDataReq.ready)
+    ))
+    XSPerfSeqAccumulate("icache_main_s1", s1_valid && !io.flush, Seq(
+        ("advance", s1_fire),
+        ("wait_refill", !s1_fetchFinish),
+        ("wait_ifu", s1_fetchFinish && !io.toIFU.ready)
+    ))
 }

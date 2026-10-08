@@ -17,6 +17,7 @@ import boom.fdip.ifu._
 
 import boom.fdip.common._
 import boom.fdip.util._
+import boom.perf._
 import freechips.rocketchip.regmapper.RRTest0Map.re
 
 
@@ -51,6 +52,17 @@ class WayLookup(implicit p: Parameters) extends ICacheModule{
     io.write.ready := !full && !io.flush
     io.wayLookupToMainPipe.valid := !empty && !updateStall(readPtrValue) && !io.flush
     io.wayLookupToMainPipe.bits.entry := entry(readPtrValue)
+
+    // Distinguish a producer blocked by a full queue from a consumer waiting
+    // for an entry, a refill update, or the main fetch pipeline.
+    XSPerfSeqAccumulate("waylookup", !io.flush, Seq(
+        ("enq", io.write.fire),
+        ("deq", io.wayLookupToMainPipe.fire),
+        ("full", full),
+        ("empty", empty),
+        ("head_update_stall", !empty && updateStall(readPtrValue)),
+        ("consumer_stall", io.wayLookupToMainPipe.valid && !io.wayLookupToMainPipe.ready)
+    ))
 
 
     when(io.flush){

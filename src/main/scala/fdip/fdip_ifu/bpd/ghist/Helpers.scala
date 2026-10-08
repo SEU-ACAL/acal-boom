@@ -49,9 +49,8 @@ trait PhrHelpers extends HasPhrParameters {
     */
   def pathHash(cfiPc: UInt, target: UInt): UInt = {
     require(PHRHashWidth >= PHRShamt, "PHR hash width must cover the shift amount")
-    val pcBits = (cfiPc >> 1) ^ (cfiPc >> 3) ^ (cfiPc >> 5) ^ (cfiPc >> 7)
-    val targetBits = target >> 2
-    (pcBits ^ targetBits)(PHRHashWidth - 1, 0)
+    val hash = Cat(cfiPc(9, 1), 0.U(4.W)) ^ target(16, 2) // magic numbers
+    hash(PHRHashWidth - 1, 0)
   }
 
   def getPathHashComponents(cfiPc: UInt, target: UInt): (UInt, UInt) = {

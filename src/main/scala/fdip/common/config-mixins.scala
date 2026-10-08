@@ -447,7 +447,7 @@ class WithTAGELBPD extends Config((site, here, up) => {
   case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
     case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
       bpdMaxMetaLength = 150,
-      globalHistoryLength = 64,
+      globalHistoryLength = 119,
       localHistoryLength = 1,
       localHistoryNSets = 0
     )))

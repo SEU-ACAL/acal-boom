@@ -392,6 +392,7 @@ class BoomFrontendModule(outer: FDIPBoomFrontend) extends LazyModuleImp(outer)
   ftq.io.toICache.req.ready     := icache.io.req.ready
   ifu.io.fromICache.ready       := icache.io.req.ready
   ftq.io.toPrefetch.ready    := icache.io.prefetch_req.ready
+  ftq.io.main_wait_waylookup := icache.io.perf.main_wait_waylookup
   ifu.io.fromICache.data_valid  := icache.io.resp.valid
   ifu.io.fromICache.data        := icache.io.resp.bits.data
   ifu.io.fromICache.ae          := icache.io.resp.bits.ae

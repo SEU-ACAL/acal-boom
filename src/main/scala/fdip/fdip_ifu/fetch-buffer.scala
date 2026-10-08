@@ -22,6 +22,7 @@ import freechips.rocketchip.rocket.{MStatus, BP, BreakpointUnit}
 import boom.fdip.common._
 import boom.fdip.util.{BoolToChar, MaskUpper}
 import boom.fdip.ifu._
+import boom.perf._
 /**
  * Bundle that is made up of converted MicroOps from the Fetch Bundle
  * input to the Fetch Buffer. This is handed to the Decode stage.
@@ -165,6 +166,56 @@ class FetchBuffer(implicit p: Parameters) extends BoomModule
   io.deq.bits.uops zip deq_valids           map {case (d,v) => d.valid := v}
   io.deq.bits.uops zip Mux1H(head, deq_vec) map {case (d,q) => d.bits  := q}
   io.deq.valid := deq_valids.reduce(_||_)
+
+  if (p(BoomXSPerfEnableKey)) {
+    // Occupancy includes slots already decoded from a partial row: head only
+    // releases storage when the entire row retires. Observe existing pointers
+    // rather than maintain another queue state that could drift on clear.
+    val headSlot = OHToUInt(head) * coreWidth.U
+    val tailSlot = OHToUInt(tail)
+    val occupied = Mux(headSlot === tailSlot,
+      Mux(maybe_full, numEntries.U, 0.U),
+      Mux(tailSlot > headSlot, tailSlot - headSlot,
+        numEntries.U + tailSlot - headSlot))
+    val freeSlots = numEntries.U - occupied
+    val incoming = PopCount(io.enq.bits.mask)
+    val fitsMask = incoming <= freeSlots
+    val fitsAfterDeq = incoming <= (freeSlots +& Mux(do_deq, coreWidth.U, 0.U))
+    val enqValid = io.enq.valid && !io.clear
+    val enqFire = enqValid && io.enq.ready
+    val enqStall = enqValid && !io.enq.ready
+    val deqValid = io.deq.valid && !io.clear
+
+    XSPerfSeqAccumulate("fb_enq", !io.clear, Seq(
+      ("valid", io.enq.valid),
+      ("fire", io.enq.fire),
+      ("stall", io.enq.valid && !io.enq.ready)
+    ))
+    // Exclusive classification of rejected packets. Credit only a complete
+    // row release; partial decode does not advance the storage head.
+    XSPerfSeqAccumulate("fb_enq_stall", enqStall, Seq(
+      ("mask_fits", fitsMask),
+      ("deq_fits", !fitsMask && fitsAfterDeq),
+      ("space", !fitsMask && !fitsAfterDeq)
+    ))
+    XSPerfSeqAccumulate("fb_deq", !io.clear, Seq(
+      ("valid", io.deq.valid),
+      ("fire", io.deq.fire),
+      ("stall", io.deq.valid && !io.deq.ready),
+      ("row_release", do_deq)
+    ))
+    XSPerfAccumulate("fb_enq_stall_decode_stall", enqStall && deqValid && !io.deq.ready)
+    XSPerfAccumulate("fb_enq_instr", Mux(enqFire, incoming, 0.U))
+    XSPerfAccumulate("fb_occupancy_sum", Mux(io.clear, 0.U, occupied))
+    XSPerfSeqAccumulate("fb_occupancy", !io.clear, Seq(
+      ("empty", occupied === 0.U),
+      ("room_fetch", occupied =/= 0.U && freeSlots >= fetchWidth.U),
+      ("tight", freeSlots =/= 0.U && freeSlots < fetchWidth.U),
+      ("full", freeSlots === 0.U)
+    ))
+    XSPerfSeqAccumulate("fb_enq_size", enqFire,
+      (0 to fetchWidth).map(n => (n.toString, incoming === n.U)))
+  }
 
   //-------------------------------------------------------------
   // **** Update State ****

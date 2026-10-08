@@ -206,15 +206,8 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   1. taken的分支是条件分支
   2. taken的分支是非条件分支
   3. 没有taken分支
-
   */
-  val s2_btbHitNum = PopCount(s2_btbResp.map{btb=>
-    btb.valid && btb.bits.attribute.isConditional &&
-    (s2_firstTakenBranch.valid&& ((btb.bits.cfiPosition <=s2_firstTakenBranch.bits.cfiPosition) &&
-     s2_firstTakenBranch.bits.attribute.isConditional || (btb.bits.cfiPosition < s2_firstTakenBranch.bits.cfiPosition) &&
-     !s2_firstTakenBranch.bits.attribute.isConditional) ||
-    !s2_taken)
-  })
+
 
   val s2_useRas = s2_firstTakenBranch.valid && s2_firstTakenBranch.bits.attribute.hasPop && useRAS.B
   val s2_target = MuxCase(nextFetch(s2_pc),

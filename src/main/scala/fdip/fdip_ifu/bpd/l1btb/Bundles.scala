@@ -40,3 +40,11 @@ class BTBWriteBypass(implicit p: Parameters) extends L1BtbBundle()(p) {
   val position = Vec(L1BtbWays, UInt(log2Ceil(fetchBytes).W))
   val ctr = Vec(L1BtbWays, UInt(2.W))
 }
+
+class BTBEntryWriteBypass(val offsetSz: Int, val tagSz: Int)(implicit p: Parameters)
+    extends L1BtbBundle()(p) {
+  val valid = Bool()
+  val idx = UInt(log2Ceil(L1BtbSets).W)
+  val way = UInt(log2Ceil(L1BtbWays max 2).W)
+  val entry = new BTBEntry(offsetSz, tagSz)
+}

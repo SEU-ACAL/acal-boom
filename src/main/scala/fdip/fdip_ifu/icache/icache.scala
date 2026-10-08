@@ -28,6 +28,7 @@ import boom.fdip.ifu._
 
 import boom.fdip.common._
 import boom.fdip.util._
+import boom.perf._
 import freechips.rocketchip.tilelink.TLMessages.d
 
 /**
@@ -88,6 +89,7 @@ class ICacheIOBundle(val outer: ICache) extends BoomBundle()(outer.p)
   val perf = Output(new Bundle {
     val miss_acquire = Bool()
     val prefetch_acquire = Bool()
+    val main_wait_waylookup = Bool()
   })
 }
 
@@ -229,6 +231,9 @@ class ICacheLazyModule(outer: ICache) extends LazyModuleImp(outer)
     !metaRefillBusy
   mainPipe.io.flush := io.flush || io.invalidate
   mainPipe.io.toIFU.ready := io.ifu_s3_ready
+  // Export the exact MainPipe wait event for FTQ pointer/state correlation.
+  io.perf.main_wait_waylookup := mainPipe.io.fromFtq.valid && !mainPipe.io.flush &&
+    !mainPipe.io.wayLookupToMainPipe.valid
 
   missUnit.io.fetch_req <> mainPipe.io.mainPipeMissReq
   mainPipe.io.mainPipeMissResp.valid := missResp.valid
@@ -258,6 +263,22 @@ class ICacheLazyModule(outer: ICache) extends LazyModuleImp(outer)
   tl_out.e.valid := false.B
   io.perf.miss_acquire := tl_out.a.fire && tl_out.a.bits.source < 4.U
   io.perf.prefetch_acquire := tl_out.a.fire && tl_out.a.bits.source >= 4.U
+
+  // Metadata reads wait for the entire outstanding-refill interval, not just
+  // the final SRAM write. Keep this cause visible at both pipeline entrances.
+  XSPerfSeqAccumulate("icache_prefetch_meta_stall",
+    prefetchPipe.io.metaRead.req.valid && !prefetchPipe.io.metaRead.req.ready, Seq(
+      ("flush", io.flush),
+      ("invalidate", !io.flush && io.invalidate),
+      ("refill", !io.flush && !io.invalidate && metaRefillBusy)
+    ))
+  XSPerfSeqAccumulate("icache_main_req", io.req.valid, Seq(
+    ("fire", io.req.fire),
+    ("flush_blocked", io.flush || io.invalidate),
+    ("refill_blocked", !io.flush && !io.invalidate && metaRefillBusy),
+    ("pipe_blocked", !io.flush && !io.invalidate && !metaRefillBusy &&
+      !mainPipe.io.fromFtq.ready)
+  ))
 
   override def toString: String = BoomCoreStringPrefix(
     "==L1-ICache==",
