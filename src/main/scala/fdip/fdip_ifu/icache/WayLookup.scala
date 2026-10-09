@@ -78,8 +78,12 @@ class WayLookup(implicit p: Parameters) extends ICacheModule{
         readPtr := readPtr + 1.U
     }
 
-    (entry zip updateStall).map{case (e, stall) =>
-        when(io.update.valid){
+    (entry zip updateStall).zipWithIndex.map{case ((e, stall), i) =>
+        // The occupied interval excludes the write slot unless the queue is full.
+        val entryValid = Mux(readPtrFlag === writePtrFlag,
+            i.U >= readPtrValue && i.U < writePtrValue,
+            i.U >= readPtrValue || i.U < writePtrValue)
+        when(io.update.valid && entryValid && !io.flush){
             val setSame = io.update.bits.vSetIdx === e.vSetIdx
             val tagSame = io.update.bits.blkPaddr >> nSetsBits.U === e.pTag
             val waySame = UIntToOH(io.update.bits.way) === e.waymask
