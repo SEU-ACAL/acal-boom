@@ -23,6 +23,7 @@ class WayLookupEntry(implicit p: Parameters) extends ICacheBundle {
   val vSetIdx = UInt(nSetsBits.W)
   val waymask =  UInt(nWays.W)
   val pTag:        UInt      = UInt(tagBits.W)
+  val fetchFault = Bool()
 }
 class MetaReadBundle(implicit p: Parameters) extends ICacheBundle {
   val req = DecoupledIO(new MetaArrayReq())

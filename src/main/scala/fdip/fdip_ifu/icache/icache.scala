@@ -125,8 +125,7 @@ class ICacheLazyModule(outer: ICache) extends LazyModuleImp(outer)
   val prefetchPipe = Module(new PrefetchPipe())
   val wayLookup = Module(new WayLookup())
 
-  // The metadata array is single-ported.  Refill writes have highest
-  // priority; normal and prefetch lookups share the remaining read port.
+  // Refill writes have priority over metadata lookups.
   val tagArray = SyncReadMem(nSets, Vec(nWays, UInt(tagBits.W)))
   val dataArrays = (0 until nWays).map { way =>
     (0 until numBanks).map { bank =>
@@ -138,10 +137,11 @@ class ICacheLazyModule(outer: ICache) extends LazyModuleImp(outer)
   val validBits = RegInit(0.U((nSets * nWays).W))
 
   val missResp = missUnit.io.fetch_resp
+  val refillWrite = missResp.valid && !io.invalidate
   val refillStartMask = missUnit.io.refill_start.map { start =>
     Mux(start.valid, UIntToOH(Cat(start.bits.way, start.bits.vSetIdx), nSets * nWays), 0.U((nSets * nWays).W))
   }.reduce(_ | _)
-  val refillDoneMask = Mux(missResp.valid && !io.invalidate,
+  val refillDoneMask = Mux(refillWrite,
     UIntToOH(Cat(missResp.bits.way, missResp.bits.vSetIdx), nSets * nWays),
     0.U((nSets * nWays).W))
 
@@ -150,22 +150,20 @@ class ICacheLazyModule(outer: ICache) extends LazyModuleImp(outer)
   }.elsewhen (refillStartMask.orR || refillDoneMask.orR) {
     validBits := (validBits & ~refillStartMask) | (refillDoneMask & ~refillStartMask)
   }
-  // A refill owns the metadata port for the whole refill transaction and for
-  // the response/write cycle.  This prevents a read/write collision on the
-  // single-ported tag array.
-  val metaRefillBusy = missUnit.io.refill_busy || missResp.valid
+  // Outstanding misses do not occupy SRAM ports; only the completed line write
+  // blocks lookup and fetch. This lets prefetch run ahead while L2 is pending.
   // Keep ready asserted even when the prefetch request is not yet valid;
-  // PrefetchPipe uses this signal to accept its S0 transaction.  Refill owns
-  // the port whenever it is active.
-  prefetchPipe.io.metaRead.req.ready := !metaRefillBusy && !io.flush && !io.invalidate
+  // PrefetchPipe uses this signal to accept its S0 transaction.
+  prefetchPipe.io.metaRead.req.ready := !refillWrite && !io.flush && !io.invalidate
   val prefetchMetaIdx = RegEnable(
     prefetchPipe.io.metaRead.req.bits.vSetIdx,
     prefetchPipe.io.metaRead.req.fire)
 
   val prefetchMetaReadFire = prefetchPipe.io.metaRead.req.fire
+  assert(!(prefetchMetaReadFire && refillWrite), "ICache metadata read overlaps refill write")
   val metaRead = tagArray.read(
     prefetchPipe.io.metaRead.req.bits.vSetIdx, prefetchMetaReadFire)
-  when (missResp.valid && !io.invalidate) {
+  when (refillWrite) {
     tagArray.write(missResp.bits.vSetIdx,
       VecInit(Seq.fill(nWays)(missResp.bits.blkPaddr >> idxBits)),
       Seq.tabulate(nWays)(missResp.bits.way === _.U))
@@ -184,7 +182,7 @@ class ICacheLazyModule(outer: ICache) extends LazyModuleImp(outer)
   for (way <- 0 until nWays) {
     for (bank <- 0 until numBanks) {
       val array = dataArrays(way)(bank)
-      array.io.w.wen := missResp.valid && !io.invalidate && missResp.bits.way === way.U
+      array.io.w.wen := refillWrite && missResp.bits.way === way.U
       array.io.w.waddr := missResp.bits.vSetIdx
       array.io.w.wdata := missResp.bits.data((bank + 1) * bankBits - 1, bank * bankBits)
       array.io.r.req.valid := mainPipe.io.mainPipeDataReq.valid &&
@@ -224,11 +222,11 @@ class ICacheLazyModule(outer: ICache) extends LazyModuleImp(outer)
   wayLookup.io.mainPipeToWayLookup := mainPipe.io.wayLookupToMainPipe.fire
   mainPipe.io.wayLookupToMainPipe <> wayLookup.io.wayLookupToMainPipe
 
-  mainPipe.io.fromFtq.valid := io.req.valid && !io.flush && !metaRefillBusy
+  mainPipe.io.fromFtq.valid := io.req.valid && !io.flush && !refillWrite
   mainPipe.io.fromFtq.bits.fetch_pc := io.req.bits.addr
   mainPipe.io.fromFtq.bits.ftqIdx := 0.U
   io.req.ready := mainPipe.io.fromFtq.ready && !io.flush && !io.invalidate &&
-    !metaRefillBusy
+    !refillWrite
   mainPipe.io.flush := io.flush || io.invalidate
   mainPipe.io.toIFU.ready := io.ifu_s3_ready
   // Export the exact MainPipe wait event for FTQ pointer/state correlation.
@@ -264,19 +262,18 @@ class ICacheLazyModule(outer: ICache) extends LazyModuleImp(outer)
   io.perf.miss_acquire := tl_out.a.fire && tl_out.a.bits.source < 4.U
   io.perf.prefetch_acquire := tl_out.a.fire && tl_out.a.bits.source >= 4.U
 
-  // Metadata reads wait for the entire outstanding-refill interval, not just
-  // the final SRAM write. Keep this cause visible at both pipeline entrances.
+  // Count SRAM write conflicts separately from downstream pipeline stalls.
   XSPerfSeqAccumulate("icache_prefetch_meta_stall",
     prefetchPipe.io.metaRead.req.valid && !prefetchPipe.io.metaRead.req.ready, Seq(
       ("flush", io.flush),
       ("invalidate", !io.flush && io.invalidate),
-      ("refill", !io.flush && !io.invalidate && metaRefillBusy)
+      ("refill", !io.flush && !io.invalidate && refillWrite)
     ))
   XSPerfSeqAccumulate("icache_main_req", io.req.valid, Seq(
     ("fire", io.req.fire),
     ("flush_blocked", io.flush || io.invalidate),
-    ("refill_blocked", !io.flush && !io.invalidate && metaRefillBusy),
-    ("pipe_blocked", !io.flush && !io.invalidate && !metaRefillBusy &&
+    ("refill_blocked", !io.flush && !io.invalidate && refillWrite),
+    ("pipe_blocked", !io.flush && !io.invalidate && !refillWrite &&
       !mainPipe.io.fromFtq.ready)
   ))
 

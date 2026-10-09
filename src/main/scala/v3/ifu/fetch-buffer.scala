@@ -21,6 +21,7 @@ import freechips.rocketchip.rocket.{MStatus, BP, BreakpointUnit}
 
 import boom.v3.common._
 import boom.v3.util.{BoolToChar, MaskUpper}
+import boom.perf._
 
 /**
  * Bundle that is made up of converted MicroOps from the Fetch Bundle
@@ -82,6 +83,9 @@ class FetchBuffer(implicit p: Parameters) extends BoomModule
   val do_enq = !(at_head && maybe_full || might_hit_head)
 
   io.enq.ready := do_enq
+
+  XSPerfAccumulate("fetch_buffer_stall", io.enq.valid && !io.enq.ready)
+  XSPerfAccumulate("fetch_buffer_deq_stall", io.deq.valid && !io.deq.ready)
 
   // Input microops.
   val in_mask = Wire(Vec(fetchWidth, Bool()))

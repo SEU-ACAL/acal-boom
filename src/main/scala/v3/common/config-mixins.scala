@@ -51,6 +51,16 @@ class WithNBoomPerfCounters(n: Int) extends Config((site, here, up) => {
   }
 })
 
+/** Configure short forward branch folding and backend predication together. */
+class WithBoomSFBOpt(enable: Boolean = false) extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+      enableSFBOpt = enable
+    )))
+    case other => other
+  }
+})
+
 
 class WithSynchronousBoomTiles extends Config((site, here, up) => {
   case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
@@ -442,21 +452,21 @@ class WithTAGELBPD extends Config((site, here, up) => {
       localHistoryLength = 1,
       localHistoryNSets = 0,
       branchPredictor = ((resp_in: BranchPredictionBankResponse, p: Parameters) => {
-        val loop = Module(new LoopBranchPredictorBank()(p))
+        // val loop = Module(new LoopBranchPredictorBank()(p))
         val tage = Module(new TageBranchPredictorBank()(p))
         val btb = Module(new BTBBranchPredictorBank()(p))
         val bim = Module(new BIMBranchPredictorBank()(p))
         val ubtb = Module(new FAMicroBTBBranchPredictorBank()(p))
-        val preds = Seq(loop, tage, btb, ubtb, bim)
+        val preds = Seq(tage, btb, ubtb, bim)
         preds.map(_.io := DontCare)
 
         ubtb.io.resp_in(0)  := resp_in
         bim.io.resp_in(0)   := ubtb.io.resp
         btb.io.resp_in(0)   := bim.io.resp
         tage.io.resp_in(0)  := btb.io.resp
-        loop.io.resp_in(0)  := tage.io.resp
+        // loop.io.resp_in(0)  := tage.io.resp
 
-        (preds, loop.io.resp)
+        (preds, tage.io.resp)
       })
     )))
     case other => other

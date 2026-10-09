@@ -25,6 +25,7 @@ import freechips.rocketchip.util.{Str}
 import boom.v3.common._
 import boom.v3.exu._
 import boom.v3.util._
+import boom.perf._
 
 /**
  * FTQ Parameters used in configurations
@@ -149,6 +150,9 @@ class FetchTargetQueue(implicit p: Parameters) extends BoomModule
   }
 
   val do_enq = io.enq.fire
+
+  XSPerfAccumulate("ftq_full", full)
+  XSPerfAccumulate("ftq_enq_stall", io.enq.valid && !io.enq.ready)
 
 
   // This register lets us initialize the ghist to 0

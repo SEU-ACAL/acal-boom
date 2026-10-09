@@ -53,6 +53,7 @@ class MainPipe(implicit p: Parameters) extends ICacheModule{
     val s1_wayMask = RegEnable(s0_wayMask,s0_fire)
     val s1_vSetIdx = RegEnable(s0_vSetIdx,s0_fire)
     val s1_pTag = RegEnable(s0_pTag,s0_fire)
+    val s1_fetchFault = RegEnable(s0_wayLookupEntry.fetchFault, s0_fire)
     val s1_valid = RegInit(false.B)
     val s1_startBank = RegEnable(s0_startBank,s0_fire)
     val s1_sramValid = RegNext(s0_fire)
@@ -71,16 +72,10 @@ class MainPipe(implicit p: Parameters) extends ICacheModule{
     val s1_missDataResp = Wire(new MainPipeDataResp)
     s1_missDataResp.data := s1_missResp.data
     val s1_missRespValid = WireInit(io.mainPipeMissResp.valid)
-    val s1_missRespHit = s1_missRespValid && s1_missResp.blkPaddr >> blockOffBits.U === s1_pTag && s1_missResp.vSetIdx === s1_vSetIdx
+    // blkPaddr is already a block address (the byte offset is removed), so
+    // remove only the set-index bits when comparing it with the stored tag.
+    val s1_missRespHit = s1_missRespValid && s1_missResp.blkPaddr >> idxBits.U === s1_pTag && s1_missResp.vSetIdx === s1_vSetIdx
     
-    when(io.flush){
-        s1_waitMissResp := false.B
-    }.elsewhen(s1_valid && !s1_hit){
-        s1_waitMissResp := true.B
-    }.elsewhen(io.mainPipeMissResp.valid){
-        s1_waitMissResp := false.B
-    }
-
     val s1_finalHit = Mux(s1_missRespHit||s1_sramValid,s1_missRespHit || s1_hit,RegEnable(s1_missRespHit || s1_hit, s1_missRespHit||s1_sramValid))
     val s1_dataHold = RegEnable(
         Mux(s1_missRespHit, s1_missDataResp, s1_dataResp),
@@ -88,20 +83,34 @@ class MainPipe(implicit p: Parameters) extends ICacheModule{
     val s1_finalData = Mux(s1_missRespHit, s1_missDataResp,
         Mux(s1_sramValid, s1_dataResp, s1_dataHold))
 
-    val s1_fetchFinish = s1_finalHit
+    // Faulting lookups still retire in order; IFU receives the TLB exception.
+    val s1_fetchFinish = s1_finalHit || s1_fetchFault
     // 取指令完成或者!s1_valid
     s1_ready := s1_fetchFinish && io.toIFU.ready || !s1_valid
 
+    // Keep the request retryable until the miss unit actually accepts it.
+    // Setting this state merely because a lookup is a miss can permanently
+    // drop a demand when all MSHRs are temporarily busy. A response from a
+    // different line must not clear the pending state.
+    val s1_retire = s1_valid && s1_fetchFinish && io.toIFU.ready
+    when(io.flush){
+        s1_waitMissResp := false.B
+    }.elsewhen(s1_missRespHit || s1_retire){
+        s1_waitMissResp := false.B
+    }.elsewhen(io.mainPipeMissReq.fire){
+        s1_waitMissResp := true.B
+    }
 
 
-    io.mainPipeMissReq.valid := s1_valid && !s1_finalHit && !s1_waitMissResp
+
+    io.mainPipeMissReq.valid := s1_valid && !s1_fetchFault && !s1_finalHit && !s1_waitMissResp
     io.mainPipeMissReq.bits.blkPaddr := Cat(s1_pTag,s1_vSetIdx)
     io.mainPipeMissReq.bits.way := PriorityEncoder(s1_wayMask)
     io.mainPipeMissReq.bits.vSetIdx := s1_vSetIdx
 
 
-    io.toIFU.valid := s1_valid && s1_fetchFinish && s1_finalHit
-    io.toIFU.bits.data := s1_finalData.data
+    io.toIFU.valid := s1_valid && s1_fetchFinish
+    io.toIFU.bits.data := Mux(s1_fetchFault, 0.U, s1_finalData.data)
     io.toIFU.bits.startBank := s1_startBank
 
     s1_fire := s1_valid && s1_fetchFinish && io.toIFU.ready

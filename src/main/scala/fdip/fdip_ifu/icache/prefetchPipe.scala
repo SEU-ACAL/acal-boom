@@ -57,6 +57,8 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
   private val s1_missRegTag = RegInit(0.U(tagBits.W))
   private val s1_missRegWaymask = RegInit(0.U(nWays.W))
   private val s1_tlbDone   = RegInit(false.B)
+  private val s1_fetchFault = RegInit(false.B)
+  private val s1_prefetchable = RegInit(false.B)
   private val s1_metaDone  = RegInit(false.B)
 
   /* A fresh FTQ request drives both initial requests. s0_fire is the single
@@ -86,6 +88,7 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
   private val s0_tlbHit = s0_fire && !io.tlbResp.miss
   private val s1_tlbHit = s1_itlbResend && io.tlbReq.fire && !io.tlbResp.miss
   private val s1_tlbFinish = s1_tlbDone || s1_tlbHit
+  private val tlbFetchFault = io.tlbResp.ae.inst || io.tlbResp.pf.inst || io.tlbResp.gf.inst
 
   private val s1_metaNeedResend = s1_valid && (
     (s1_state === S1FsmState.ItlbResend && s1_tlbFinish) ||
@@ -146,6 +149,8 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
     s1_tlbDone := s0_tlbHit
     when (s0_tlbHit) {
       s1_pTag := io.tlbResp.paddr(tagBits + untagBits - 1, untagBits)
+      s1_fetchFault := tlbFetchFault
+      s1_prefetchable := io.tlbResp.prefetchable
     }
     s1_metaDone := false.B
     s1_metaRegValid := false.B
@@ -159,6 +164,8 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
     when (s1_tlbHit && s1_valid) {
       s1_tlbDone := true.B
       s1_pTag := io.tlbResp.paddr(tagBits + untagBits - 1, untagBits)
+      s1_fetchFault := tlbFetchFault
+      s1_prefetchable := io.tlbResp.prefetchable
     }
     when (s1_metaFinishThisCycle && s1_valid) {
       s1_metaDone := true.B
@@ -184,7 +191,7 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
   }
 
   /* Once meta responds, retain its result for any later WayLookup backpressure. */
-  private val s1_waymaskForEnq = s1_metaWaymask
+  private val s1_waymaskForEnq = Mux(s1_fetchFault, 0.U, s1_metaWaymask)
   private val s1_pTagForEnq = Mux(s1_tlbHit,
     io.tlbResp.paddr(tagBits + untagBits - 1, untagBits), s1_pTag)
   // TLB replay finishes in ItlbResend, where WayLookup cannot enqueue. In
@@ -204,6 +211,7 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
   io.wayLookupWrite.bits.entry.vSetIdx := s1_vSetIdx
   io.wayLookupWrite.bits.entry.waymask := s1_waymaskForEnq
   io.wayLookupWrite.bits.entry.pTag := s1_pTagForEnq
+  io.wayLookupWrite.bits.entry.fetchFault := s1_fetchFault
   io.wayLookupWrite.bits.ftqIdx := 0.U
 
 
@@ -211,6 +219,7 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
   private val s2_tag = Reg(UInt(tagBits.W))
   private val s2_idx = Reg(UInt(nSetsBits.W))
   private val s2_hit = RegInit(false.B)
+  private val s2_skipPrefetch = RegInit(false.B)
 
 
   when (io.flush) {
@@ -220,17 +229,18 @@ class PrefetchPipe(implicit p: Parameters) extends BoomModule()(p)
     s2_tag := s1_pTagForEnq
     s2_idx := s1_vSetIdx
     s2_hit := s1_waymaskForEnq.orR
+    s2_skipPrefetch := s1_fetchFault || !s1_prefetchable
   }.elsewhen (s2_fire) {
     s2_valid := false.B
   }
   //TODO: consider the case when miss resp hit this
-  private val s2_miss = s2_valid && !s2_hit
+  private val s2_miss = s2_valid && !s2_hit && !s2_skipPrefetch
   io.missReq.valid := s2_miss && !io.flush
   io.missReq.bits.blkPaddr := Cat(s2_tag, s2_idx)
   io.missReq.bits.vSetIdx := s2_idx
   io.missReq.bits.way := (if (isDM) 0.U else LFSR(16, s2_miss)(log2Ceil(nWays) - 1, 0))
 
-  s2_fire  := s2_valid && (s2_hit || io.missReq.fire)
+  s2_fire  := s2_valid && (s2_hit || s2_skipPrefetch || io.missReq.fire)
   s2_ready := !s2_valid || s2_fire
 
   switch (s1_state) {

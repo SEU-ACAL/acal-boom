@@ -9,9 +9,9 @@ import chisel3.util.log2Ceil
 
 /** Configuration owned by the FDIP PHR predictor. */
 case class BoomPHRParams(
-  Shamt: Int = 3,
-  HashWidth: Int = 10,
-  HashHighWidth: Int = 7
+  Shamt: Int = 2,
+  HashWidth: Int = 12,
+  HashHighWidth: Int = 10
 )
 
 trait HasPhrParameters extends boom.fdip.ifu.bpd.HasBpdParameters

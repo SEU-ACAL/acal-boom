@@ -28,6 +28,7 @@ import freechips.rocketchip.rocket.{HasL1ICacheParameters, ICacheParams, ICacheE
 
 import boom.v3.common._
 import boom.v3.util.{BoomCoreStringPrefix}
+import boom.perf._
 
 /**
  * ICache module
@@ -142,6 +143,9 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
   val refill_one_beat = tl_out.d.fire && edge_out.hasData(tl_out.d.bits)
 
   io.req.ready := !refill_one_beat
+
+  XSPerfAccumulate("icache_req_blocked", io.req.valid && !io.req.ready)
+  XSPerfAccumulate("icache_refill_wait", refill_valid)
 
   val (_, _, d_done, refill_cnt) = edge_out.count(tl_out.d)
   val refill_done = refill_one_beat && d_done
@@ -351,5 +355,4 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
     "" + (if (nBanks == 2) "Dual-banked" else "Single-banked"),
     "I-TLB ways    : " + cacheParams.nTLBWays + "\n")
 }
-
 

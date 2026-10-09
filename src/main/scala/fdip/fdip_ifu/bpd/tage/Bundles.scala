@@ -16,9 +16,9 @@ class TageEntry(params: BoomTageParams = BoomTageParams())(implicit p: Parameter
   val ctr   = UInt(3.W)
 }
 
-class TageTableReadReq(params: BoomTageParams = BoomTageParams())(implicit p: Parameters)
+class TageTableReadReq(nRows: Int)(implicit p: Parameters)
   extends TageBundle()(p) {
-  val setIdx = UInt(log2Ceil(params.tableInfo.head._1).W)
+  val setIdx = UInt(log2Ceil(nRows).W)
 }
 
 class TageTableReadResp(params: BoomTageParams = BoomTageParams())(implicit p: Parameters)
@@ -29,9 +29,9 @@ class TageTableReadResp(params: BoomTageParams = BoomTageParams())(implicit p: P
   val u   = UInt(2.W)
 }
 
-class TageTableWriteReq(params: BoomTageParams = BoomTageParams())(implicit p: Parameters)
+class TageTableWriteReq(nRows: Int, params: BoomTageParams = BoomTageParams())(implicit p: Parameters)
   extends TageBundle()(p) {
-  val setIdx      = UInt(log2Ceil(params.tableInfo.head._1).W)
+  val setIdx      = UInt(log2Ceil(nRows).W)
   val wayMask     = Vec(TageNways, Bool())
   val writeEntry  = Vec(TageNways, Bool())
   val writeUseful = Vec(TageNways, Bool())
@@ -43,8 +43,9 @@ class TageWriteBypass(implicit p: Parameters) extends TageBundle()(p) {
   // A table can write more than one way in one training cycle.  Keep the
   // bypass key/value per way so a write to way 1 cannot be mistaken for way 0.
   val valid = Vec(TageTables, Vec(TageNways, Bool()))
-  val idx = Vec(TageTables, Vec(TageNways,
-    UInt(log2Ceil(tageParams.tableInfo.map(_._1).max).W)))
+  val idx = MixedVec(tageParams.tableInfo.map { case (nRows, _, _) =>
+    Vec(TageNways, UInt(log2Ceil(nRows).W))
+  })
   val tag = Vec(TageTables, Vec(TageNways, UInt(TageTagWidth.W)))
   val ctr = Vec(TageTables, Vec(TageNways, UInt(3.W)))
   val uValid = Vec(TageTables, Vec(TageNways, Bool()))

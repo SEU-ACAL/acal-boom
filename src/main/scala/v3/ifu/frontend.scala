@@ -26,6 +26,7 @@ import freechips.rocketchip.util.property._
 import boom.v3.common._
 import boom.v3.exu.{CommitExceptionSignals, BranchDecode, BrUpdateInfo, BranchDecodeSignals}
 import boom.v3.util._
+import boom.perf._
 
 
 class FrontendResp(implicit p: Parameters) extends BoomBundle()(p) {
@@ -355,6 +356,10 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
   val s0_replay_ppc  = Wire(UInt())
   val s0_s1_use_f3_bpd_resp = WireInit(false.B)
 
+  // Frontend control events used to separate predictor redirects/replays
+  // from backend branch mispredicts in the V3-vs-FDIP comparison.
+  XSPerfAccumulate("bpu_replay", s0_is_replay)
+
 
 
 
@@ -475,6 +480,12 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
     s2_vpc,
     false.B,
     false.B)
+
+  // F2 is the first stage where the predicted next PC is selected. The
+  // override counter is the subset that changes an already in-flight F1 PC.
+  XSPerfAccumulate("bpu_redirect", f2_do_redirect)
+  XSPerfAccumulate("bpu_override", f2_do_redirect && s1_valid &&
+    s1_vpc =/= f2_predicted_target)
 
   val f2_correct_f1_ghist = s1_ghist =/= f2_predicted_ghist && enableGHistStallRepair.B
 
@@ -890,8 +901,9 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
   val f4_sfb_valid = f4_sfbs.reduce(_||_) && f4.io.deq.valid
   val f4_sfb_idx   = PriorityEncoder(f4_sfbs)
   val f4_sfb_mask  = f4.io.deq.bits.sfb_masks(f4_sfb_idx)
-  // If we have a SFB, wait for next fetch to be available in f3
+  // Only wait for the next fetch when SFB folding is enabled.
   val f4_delay     = (
+    enableSFBOpt.B &&
     f4.io.deq.bits.sfbs.reduce(_||_) &&
     !f4.io.deq.bits.cfi_idx.valid &&
     !f4.io.enq.valid &&

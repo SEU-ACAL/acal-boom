@@ -9,6 +9,7 @@ import freechips.rocketchip.tilelink._
 
 import boom.v3.common._
 import boom.v3.util.{BoomCoreStringPrefix}
+import boom.perf._
 
 
 
@@ -210,6 +211,13 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
     // Update
     val update = Input(Valid(new BranchPredictionUpdate))
   })
+
+  // Predictor boundary counters are intentionally independent of the
+  // prediction logic. `f3_fire` is the response consumption point used by
+  // the frontend, so it is a stable response event for comparisons.
+  XSPerfAccumulate("bpu_req", io.f0_req.valid)
+  XSPerfAccumulate("bpu_resp", io.f3_fire)
+  XSPerfAccumulate("bpu_train", io.update.valid)
 
   var total_memsize = 0
   val bpdStr = new StringBuilder
@@ -473,5 +481,4 @@ class BranchPredictor(implicit p: Parameters) extends BoomModule()(p)
 class NullBranchPredictorBank(implicit p: Parameters) extends BranchPredictorBank()(p) {
   val mems = Nil
 }
-
 

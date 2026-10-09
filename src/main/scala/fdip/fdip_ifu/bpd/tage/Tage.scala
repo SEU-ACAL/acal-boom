@@ -21,10 +21,10 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
   require(histLength <= globalHistoryLength)
 
   val io = IO( new Bundle {
-    val readReq = Input(Vec(TageNways, Valid(new TageTableReadReq())))
+    val readReq = Input(Vec(TageNways, Valid(new TageTableReadReq(nRows))))
     val readResp = Output(Vec(TageNways,new TageTableReadResp()))
 
-    val writeReq = Input(Valid(new TageTableWriteReq()))
+    val writeReq = Input(Valid(new TageTableWriteReq(nRows)))
     val writeEntryAccepted = Output(Vec(TageNways, Bool()))
     val writeUsefulAccepted = Output(Vec(TageNways, Bool()))
     val clearUseful = Output(Valid(UInt(log2Ceil(nRows).W)))
@@ -39,8 +39,13 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
 
   val usefulCnt  = Seq.fill(TageNways){SyncReadMem(nRows, UInt(2.W))}
   val table      = Seq.fill(TageNways){SyncReadMem(nRows,new TageEntry)}
-  
 
+  val clear_u_ctr = RegInit(0.U((log2Ceil(uBitPeriod) + log2Ceil(nRows) + 1).W))
+
+
+  val clear_u_pause = clear_u_ctr(log2Ceil(uBitPeriod)-1,0) === 0.U && RegNext(clear_u_ctr(log2Ceil(uBitPeriod)-1,0) =/= 0.U)
+  val clear_u_idx = RegInit(0.U(nRows.W))
+  val doing_clear_u = RegInit(false.B)
 
 
   for(i <- 0 until TageNways){
@@ -49,16 +54,21 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
     io.readResp(i).valid := readEntryResp.valid
     io.readResp(i).ctr := readEntryResp.ctr
     io.readResp(i).tag := readEntryResp.tag
-    io.readResp(i).u   := readUsefulResp
+    io.readResp(i).u   := Mux(doing_clear_u, 0.U, readUsefulResp)
   }
 
 
 
-  val clear_u_ctr = RegInit(0.U((log2Ceil(uBitPeriod) + log2Ceil(nRows) + 1).W))
-  when (doing_reset) { clear_u_ctr := 1.U } .otherwise { clear_u_ctr := clear_u_ctr + 1.U }
 
-  val doing_clear_u = clear_u_ctr(log2Ceil(uBitPeriod)-1,0) === 0.U
-  val clear_u_idx = clear_u_ctr >> log2Ceil(uBitPeriod)
+
+  when(doing_clear_u && clear_u_idx === (nRows-1).U) { doing_clear_u := false.B }
+  .elsewhen (clear_u_pause) { doing_clear_u := true.B }
+
+  when(doing_clear_u && clear_u_idx === (nRows-1).U){
+    clear_u_idx := 0.U
+  }.elsewhen(doing_clear_u) { clear_u_idx := clear_u_idx + 1.U }
+
+  when (doing_reset) { clear_u_ctr := 1.U } .otherwise { clear_u_ctr := clear_u_ctr + 1.U }
   io.clearUseful.valid := !doing_reset && doing_clear_u
   io.clearUseful.bits := clear_u_idx
   for(i <- 0 until TageNways) {
@@ -122,6 +132,12 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
   class TageTrainTrace extends Bundle {
     val tableIdx  = UInt(log2Ceil(tageNTables max 2).W)
     val wayIdx    = UInt(log2Ceil(TageNways max 2).W)
+    // Allocation-decision context, repeated on each write row of an event.
+    val providerIdx        = UInt(log2Ceil(tageNTables max 2).W)
+    val providerValid      = Bool()
+    val allocateMask       = UInt(tageNTables.W)
+    val selectedAllocTable = UInt(log2Ceil(tageNTables max 2).W)
+    val providerIsLongest  = Bool()
     val startPc   = UInt(vaddrBitsExtended.W)
     val cfiPosition = UInt(log2Ceil(fetchBytes).W)
     val ghist      = UInt(globalHistoryLength.W)
@@ -154,7 +170,8 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
     val idx_history = compute_folded_hist(histLength, hist, log2Ceil(nRows))
     val idx = (unhashed_idx ^ idx_history)(log2Ceil(nRows)-1,0)
     val tag_history = compute_folded_hist(histLength, hist, tagSz)
-    val tag = ((unhashed_idx >> log2Ceil(nRows)) ^ tag_history)(tagSz-1,0)
+    val tag1_history = compute_folded_hist(histLength, hist, tagSz-1)
+    val tag = ((unhashed_idx >> log2Ceil(nRows)) ^ tag_history ^ Cat(tag1_history,0.U))(tagSz-1,0)
     (idx, tag)
   }
 
@@ -353,8 +370,10 @@ Train Stage
       val providerWayMask = t0_tageMeta.provider_wayMask(idx)
       val bypassWayHits = ctrWriteBypass.map { entry =>
         VecInit((0 until TageNways).map { way =>
+          // Zero-extend per-table addresses before dynamic table selection.
+          val bypassIdx = VecInit(entry.idx.map(_(way)))(tableIdx)
           provider.valid && providerWayMask(way) && entry.valid(tableIdx)(way) &&
-            entry.idx(tableIdx)(way) === t0_hashIdx(tableIdx) &&
+            bypassIdx === t0_hashIdx(tableIdx) &&
             entry.tag(tableIdx)(way) === (t0_hashTag(tableIdx) ^ btb.bits.position)
         })
       }
@@ -404,7 +423,7 @@ Train Stage
     //TODO:allocate 算法可以优化
     val t0_needAllocate = t0_cfiInRange && t0_cfi.attribute.isConditional && t0_cfi.mispredict && !t0_providerIsLongest
     val t0_canAllocate = t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).valid || !t0_mispredHitTableMask.reduce(_||_)
-    val t0_randAlloc = random.LFSR(width = 15)(tageNTables - 1, 0)
+    val t0_randAlloc = random.LFSR(width = 12)(tageNTables - 1, 0)
     val t0_allocWayMasks = t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).bits
     val t0_allocTableMask = VecInit(t0_allocWayMasks.map(_.orR)).asUInt
     val t0_randAllocMask = t0_randAlloc & t0_allocTableMask
@@ -417,7 +436,7 @@ Train Stage
     val t0_randAllocWay = random.LFSR(width = t0_randAllocWayWidth max 2)(t0_randAllocWayWidth - 1, 0)
     val t0_randAllocWayMask = UIntToOH(t0_randAllocWay, TageNways)
     val t0_allocateWayMask = Mux(t0_mispredHitTableMask.reduce(_||_) && t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).valid,
-          PriorityEncoderOH(t0_allocWayMasks(t0_allocateTableIdx)),t0_randAllocWayMask)
+           Mux(t0_allocWayMasks(t0_allocateTableIdx).andR,t0_randAllocWayMask,PriorityEncoderOH(t0_allocWayMasks(t0_allocateTableIdx))),t0_randAllocWayMask)
     /* 
     CTR taken 111 和NT 000都不更新
     br_mask 可以得到不taken cfi可以得到taken 信息
@@ -557,6 +576,14 @@ Train Stage
         val tageTrainTraceRecord = Wire(new TageTrainTrace)
         tageTrainTraceRecord.tableIdx := i.U
         tageTrainTraceRecord.wayIdx := j.U
+        // Preserve the allocation context for both allocation and ordinary
+        // update writes so T5-only masks can be distinguished from selection
+        // among multiple eligible tables.
+        tageTrainTraceRecord.providerIdx := t0_mispredHitTableMeta.bits
+        tageTrainTraceRecord.providerValid := t0_mispredHasProvider
+        tageTrainTraceRecord.allocateMask := t0_allocTableMask
+        tageTrainTraceRecord.selectedAllocTable := t0_allocateTableIdx
+        tageTrainTraceRecord.providerIsLongest := t0_providerIsLongest
         tageTrainTraceRecord.startPc := t0_pc
         tageTrainTraceRecord.cfiPosition := trainPosition
         tageTrainTraceRecord.ghist := t0_ghist

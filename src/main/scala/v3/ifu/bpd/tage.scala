@@ -9,6 +9,7 @@ import freechips.rocketchip.tilelink._
 
 import boom.v3.common._
 import boom.v3.util.{BoomCoreStringPrefix, MaskLower, WrapInc}
+import boom.perf._
 
 import scala.math.min
 
@@ -19,6 +20,14 @@ import scala.math.min
 class TageResp extends Bundle {
   val ctr = UInt(3.W)
   val u   = UInt(2.W)
+  // The response valid bit below is the tag-hit result. Keep the stored
+  // entry state separate so traces can distinguish an invalid entry from a
+  // valid entry with a tag mismatch.
+  // V3's configured tables use 7, 8, and 9-bit tags. A fixed response
+  // width keeps the table response vector homogeneous; narrower tags are
+  // zero-extended when they cross this observability boundary.
+  val tag = UInt(9.W)
+  val stored_valid = Bool()
 }
 
 class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPeriod: Int)
@@ -45,6 +54,11 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
 
     val update_u_mask = Input(Vec(bankWidth, Bool()))
     val update_u = Input(Vec(bankWidth, UInt(2.W)))
+
+    // The post-bypass value is exposed only for simulator observability. It
+    // does not feed any prediction logic.
+    val update_new_ctr = Output(Vec(bankWidth, UInt(3.W)))
+    val update_old_ctr_effective = Output(Vec(bankWidth, UInt(3.W)))
   })
 
   def compute_folded_hist(hist: UInt, l: Int) = {
@@ -104,6 +118,8 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
     io.f3_resp(w).valid    := RegNext(s2_req_rhits(w))
     io.f3_resp(w).bits.u   := RegNext(Cat(s2_req_rhius(w), s2_req_rlous(w)))
     io.f3_resp(w).bits.ctr := RegNext(s2_req_rtage(w).ctr)
+    io.f3_resp(w).bits.tag := RegNext(s2_req_rtage(w).tag)
+    io.f3_resp(w).bits.stored_valid := RegNext(s2_req_rtage(w).valid)
   }
 
   val clear_u_ctr = RegInit(0.U((log2Ceil(uBitPeriod) + log2Ceil(nRows) + 1).W))
@@ -165,6 +181,9 @@ class TageTable(val nRows: Int, val tagSz: Int, val histLength: Int, val uBitPer
 
     update_hi_wdata(w)    := io.update_u(w)(1)
     update_lo_wdata(w)    := io.update_u(w)(0)
+    io.update_new_ctr(w)  := update_wdata(w).ctr
+    io.update_old_ctr_effective(w) := Mux(wrbypass_hit,
+      wrbypass(wrbypass_hit_idx)(w), io.update_old_ctr(w))
   }
 
   when (io.update_mask.reduce(_||_)) {
@@ -199,6 +218,52 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
 {
   val tageUBitPeriod = params.uBitPeriod
   val tageNTables    = params.tableInfo.size
+  private val tageMaxRows = params.tableInfo.map(_._1).max
+  private val tageMaxTagBits = params.tableInfo.map(_._3).max
+  private val tageTableIdxBits = log2Ceil(tageNTables max 2)
+  private val tageLaneBits = log2Ceil(fetchWidth max 2)
+
+  /** One row per table/lane lookup. The lane is part of the alias key: V3
+    * stores the positions of one fetch block in separate bank lanes. */
+  class TagePredictionTrace extends Bundle {
+    val tableIdx    = UInt(tageTableIdxBits.W)
+    val bankLane    = UInt(tageLaneBits.W)
+    val fetchPc     = UInt(vaddrBitsExtended.W)
+    val cfiPosition = UInt(tageLaneBits.W)
+    val globalHist  = UInt(globalHistoryLength.W)
+    val index       = UInt(log2Ceil(tageMaxRows).W)
+    val lookupTag   = UInt(tageMaxTagBits.W)
+    val storedTag   = UInt(tageMaxTagBits.W)
+    val storedValid = Bool()
+    val hit         = Bool()
+    val counter     = UInt(3.W)
+    val useful      = UInt(2.W)
+  }
+
+  /** One row per actual delayed table write. `counter` is the post-bypass
+    * value, so counter updates can be compared with the write stream. */
+  class TageTrainTrace extends Bundle {
+    val tableIdx    = UInt(tageTableIdxBits.W)
+    val bankLane    = UInt(tageLaneBits.W)
+    val fetchPc     = UInt(vaddrBitsExtended.W)
+    val cfiPosition = UInt(tageLaneBits.W)
+    val globalHist  = UInt(globalHistoryLength.W)
+    val index       = UInt(log2Ceil(tageMaxRows).W)
+    val tag         = UInt(tageMaxTagBits.W)
+    val actualTaken = Bool()
+    val predictedTaken = Bool()
+    val counterInc  = Bool()
+    val oldCounter  = UInt(3.W)
+    val counter     = UInt(3.W)
+    val valid       = Bool()
+    val useful      = UInt(2.W)
+    val allocate    = Bool()
+    val cfiValid    = Bool()
+    val mispredict  = Bool()
+  }
+
+  private val tagePredictionTrace = ChiselDB.createTable("TagePredictionTrace", new TagePredictionTrace)
+  private val tageTrainTrace = ChiselDB.createTable("TageTrainTrace", new TageTrainTrace)
 
   class TageMeta extends Bundle
   {
@@ -206,6 +271,7 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
     val alt_differs   = Vec(bankWidth, Output(Bool()))
     val provider_u    = Vec(bankWidth, Output(UInt(2.W)))
     val provider_ctr  = Vec(bankWidth, Output(UInt(3.W)))
+    val provider_pred  = Vec(bankWidth, Bool())
     val allocate      = Vec(bankWidth, Valid(UInt(log2Ceil(tageNTables).W)))
   }
 
@@ -232,6 +298,30 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
   val mems = tt.map(_._2).flatten
 
   val f3_resps = VecInit(tables.map(_.io.f3_resp))
+  // The table response is three cycles after the original f0 request. These
+  // pipes mirror the request timing so every trace row carries the lookup
+  // history and hash that produced its response.
+  val s2_pc = RegNext(s1_pc)
+  val s3_pc = RegNext(s2_pc)
+  val s2_ghist = RegNext(io.f1_ghist)
+  val s3_ghist = RegNext(s2_ghist)
+  val s1_bank = RegNext(bank(io.f0_pc))
+  val s2_bank = RegNext(s1_bank)
+  val s3_bank = RegNext(s2_bank)
+  val s3_hashIdx = VecInit(tables.map { table =>
+    table.compute_tag_and_hash(s3_idx, s3_ghist)._1
+  })
+  val s3_hashTag = VecInit(tables.map { table =>
+    table.compute_tag_and_hash(s3_idx, s3_ghist)._2
+  })
+
+  val tageHitMatrix = Wire(Vec(tageNTables, Vec(bankWidth, Bool())))
+  val tageProviderValid = Wire(Vec(bankWidth, Bool()))
+  val tageProviderIdx = Wire(Vec(bankWidth, UInt(tageTableIdxBits.W)))
+  val tageProviderCtr = Wire(Vec(bankWidth, UInt(3.W)))
+  val tageLookupMask = VecInit((0 until tageNTables).flatMap { _ =>
+    (0 until bankWidth).map(w => s3_valid && s3_mask(w))
+  })
 
   val s1_update_meta = s1_update.bits.meta.asTypeOf(new TageMeta)
   val s1_update_mispredict_mask = UIntToOH(s1_update.bits.cfi_idx.bits) &
@@ -261,6 +351,25 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
     for (i <- 0 until tageNTables) {
       val hit = f3_resps(i)(w).valid
       val ctr = f3_resps(i)(w).bits.ctr
+      tageHitMatrix(i)(w) := hit
+      val predictionTraceRecord = Wire(new TagePredictionTrace)
+      predictionTraceRecord.tableIdx := i.U
+      predictionTraceRecord.bankLane := Cat(s3_bank, w.U(log2Ceil(bankWidth max 2).W))
+      predictionTraceRecord.fetchPc := s3_pc
+      predictionTraceRecord.cfiPosition := Cat(s3_bank, w.U(log2Ceil(bankWidth max 2).W))
+      predictionTraceRecord.globalHist := s3_ghist
+      predictionTraceRecord.index := s3_hashIdx(i)
+      predictionTraceRecord.lookupTag := s3_hashTag(i)
+      predictionTraceRecord.storedTag := f3_resps(i)(w).bits.tag
+      predictionTraceRecord.storedValid := f3_resps(i)(w).bits.stored_valid
+      predictionTraceRecord.hit := hit
+      predictionTraceRecord.counter := ctr
+      predictionTraceRecord.useful := f3_resps(i)(w).bits.u
+      tagePredictionTrace.log(
+        predictionTraceRecord,
+        s3_valid && s3_mask(w),
+        s"predict-t${i}-w${w}"
+      )(clock, reset)
       when (hit) {
         io.resp.f3(w).taken := Mux(ctr === 3.U || ctr === 4.U, altpred, ctr(2))
         final_altpred       := altpred
@@ -275,6 +384,10 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
     f3_meta.alt_differs(w)    := final_altpred =/= io.resp.f3(w).taken
     f3_meta.provider_u(w)     := f3_resps(provider)(w).bits.u
     f3_meta.provider_ctr(w)   := f3_resps(provider)(w).bits.ctr
+    f3_meta.provider_pred(w)  := io.resp.f3(w).taken
+    tageProviderValid(w) := provided
+    tageProviderIdx(w) := provider
+    tageProviderCtr(w) := f3_resps(provider)(w).bits.ctr
 
     // Create a mask of tables which did not hit our query, and also contain useless entries
     // and also uses a longer history than the provider
@@ -339,6 +452,39 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
 
   }
 
+  val tageAllocReq = VecInit((0 until bankWidth).map { w =>
+    s1_update.valid && s1_update.bits.is_commit_update &&
+      s1_update.bits.cfi_mispredicted && s1_update.bits.cfi_idx.valid &&
+      s1_update.bits.cfi_idx.bits === w.U &&
+      s1_update_meta.allocate(w).valid
+  })
+  val tageProviderCtrUpdate = s1_update_mask.flatten.zip(s1_update_alloc.flatten).map {
+    case (mask, alloc) => mask && !alloc
+  }
+  val tageUsefulUpdate = s1_update_u_mask.flatten.map(_ =/= 0.U)
+
+  XSPerfAccumulate("tage_lookup", PopCount(tageLookupMask))
+  XSPerfAccumulate("tage_hit", PopCount(tageHitMatrix.flatten))
+  XSPerfAccumulate("tage_provider_hit", PopCount(tageProviderValid))
+  XSPerfAccumulate("tage_longest_provider", PopCount(tageProviderValid.zip(tageProviderIdx).map {
+    case (valid, idx) => valid && idx === (tageNTables - 1).U
+  }))
+  XSPerfAccumulate("tage_weak_provider", PopCount(tageProviderValid.zip(tageProviderCtr).map {
+    case (valid, ctr) => valid && (ctr === 3.U || ctr === 4.U)
+  }))
+  XSPerfAccumulate("tage_hit_entries", PopCount(tageHitMatrix.flatten))
+  XSPerfAccumulate("tage_allocate_req", PopCount(tageAllocReq))
+  // A valid allocation is accepted by the current table write path whenever
+  // the request reaches the update mask. Keep this derived from the actual
+  // mask so the counter remains correct if arbitration is added later.
+  val tageAllocAccepted = s1_update_mask.flatten.zip(s1_update_alloc.flatten).map {
+    case (mask, alloc) => mask && alloc
+  }
+  XSPerfAccumulate("tage_allocate_accepted", PopCount(tageAllocAccepted))
+  XSPerfAccumulate("tage_provider_ctr_update", PopCount(tageProviderCtrUpdate))
+  XSPerfAccumulate("tage_useful_update", PopCount(tageUsefulUpdate))
+  XSPerfAccumulate("tage_mispredict_train",
+    s1_update.valid && s1_update.bits.is_commit_update && s1_update.bits.cfi_mispredicted)
 
   for (i <- 0 until tageNTables) {
     for (w <- 0 until bankWidth) {
@@ -352,6 +498,43 @@ class TageBranchPredictorBank(params: BoomTageParams = BoomTageParams())(implici
     }
     tables(i).io.update_pc    := RegNext(s1_update.bits.pc)
     tables(i).io.update_hist  := RegNext(s1_update.bits.ghist)
+
+    for (w <- 0 until bankWidth) {
+      val trainHash = tables(i).compute_tag_and_hash(
+        tables(i).io.update_pc, tables(i).io.update_hist)
+      val trainCfiValid = RegNext(
+        s1_update.valid && s1_update.bits.is_commit_update &&
+          s1_update.bits.cfi_idx.valid && s1_update.bits.cfi_idx.bits === w.U)
+      val trainMispredict = RegNext(
+        s1_update.valid && s1_update.bits.is_commit_update &&
+          s1_update.bits.cfi_idx.valid && s1_update.bits.cfi_idx.bits === w.U &&
+          s1_update.bits.cfi_mispredicted)
+      val trainTraceRecord = Wire(new TageTrainTrace)
+      val trainBank = bank(tables(i).io.update_pc)
+      trainTraceRecord.tableIdx := i.U
+      trainTraceRecord.bankLane := Cat(trainBank, w.U(log2Ceil(bankWidth max 2).W))
+      trainTraceRecord.fetchPc := tables(i).io.update_pc
+      trainTraceRecord.cfiPosition := Cat(trainBank, w.U(log2Ceil(bankWidth max 2).W))
+      trainTraceRecord.globalHist := tables(i).io.update_hist
+      trainTraceRecord.index := trainHash._1
+      trainTraceRecord.tag := trainHash._2
+      trainTraceRecord.actualTaken := Mux(tables(i).io.update_alloc(w),
+        tables(i).io.update_taken(w), Mux(trainCfiValid, tables(i).io.update_taken(w), false.B))
+      trainTraceRecord.predictedTaken := s1_update_meta.provider_pred(w)
+      trainTraceRecord.counterInc := tables(i).io.update_taken(w)
+      trainTraceRecord.oldCounter := tables(i).io.update_old_ctr_effective(w)
+      trainTraceRecord.counter := tables(i).io.update_new_ctr(w)
+      trainTraceRecord.valid := tables(i).io.update_mask(w)
+      trainTraceRecord.useful := tables(i).io.update_u(w)
+      trainTraceRecord.allocate := tables(i).io.update_alloc(w)
+      trainTraceRecord.cfiValid := trainCfiValid
+      trainTraceRecord.mispredict := trainMispredict
+      tageTrainTrace.log(
+        trainTraceRecord,
+        tables(i).io.update_mask(w) && !reset.asBool,
+        s"train-t${i}-w${w}"
+      )(clock, reset)
+    }
   }
 
 

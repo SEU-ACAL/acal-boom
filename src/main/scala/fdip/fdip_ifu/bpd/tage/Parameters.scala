@@ -2,12 +2,12 @@ package boom.fdip.ifu.bpd.tage
 
 /** Configuration owned by the FDIP TAGE predictor. */
 case class BoomTageParams(
-  tableInfo: Seq[Tuple3[Int, Int, Int]] = Seq((1024, 4, 10),
-                                              (1024, 8, 10),
+  tableInfo: Seq[Tuple3[Int, Int, Int]] = Seq((512, 4, 10),
+                                              (512, 8, 10),
                                               (1024, 13, 10),
                                               (1024, 16, 10),
-                                              (1024, 32, 10),
-                                              (1024, 119, 10)),
+                                              (512, 32, 10),
+                                              (2048, 64, 10)),
   uBitPeriod: Int = 2048,
   tagBits: Int = 10,
   nWays: Int = 2,

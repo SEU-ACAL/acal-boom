@@ -303,9 +303,6 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     XSPerfAccumulate("dtlb_miss", io.lsu.perf.tlbMiss)
     XSPerfAccumulate("l2tlb_miss", io.ptw.perf.l2miss)
     XSPerfAccumulate("icache_prefetch", 0.U)
-    XSPerfAccumulate("ftq_full", 0.U)
-    XSPerfAccumulate("ftq_metadata_conflict", 0.U)
-    XSPerfAccumulate("ftq_redirect_conflict", 0.U)
     XSLog.collect(perfCtrl)
   }
 
