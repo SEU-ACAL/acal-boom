@@ -54,11 +54,14 @@ class TageWriteBypass(implicit p: Parameters) extends TageBundle()(p) {
 
 class TagePredictMeta(val nTables: Int)(implicit p: Parameters) extends TageBundle()(p) {
   val provider     = Vec(predWidth, Valid(UInt(log2Ceil(nTables).W)))
+  val useProvider  = Vec(predWidth, Bool())
+  val altOrBasePred = Vec(predWidth, Bool())
   val alt_differs  = Vec(predWidth, Bool())
   val provider_u   = Vec(predWidth, UInt(2.W))
   val provider_ctr = Vec(predWidth, UInt(3.W))
   val provider_wayMask = Vec(predWidth, UInt(TageNways.W))
   val allocate     = Vec(predWidth, Valid(Vec(nTables,UInt(TageNways.W))))
+  val altConf      = Vec(predWidth, Bool())
 }
 
 class TagePrediction(implicit p: Parameters) extends TageBundle()(p) {
@@ -79,6 +82,7 @@ class TageSelectedEntry(implicit p: Parameters) extends TageBundle()(p) {
 class TageFromBtbInfo(implicit p: Parameters) extends TageBundle()(p) {
   val results     = Vec(l1btbParameters.nWays, Valid(new Prediction()))
   val s1_position = Vec(l1btbParameters.nWays, UInt(log2Ceil(fetchBytes).W))
+  val s1_weak = Vec(l1btbParameters.nWays, Bool())
 }
 
 class TagePredictorIO(implicit p: Parameters) extends TageBundle()(p) {

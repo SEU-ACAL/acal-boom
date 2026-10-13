@@ -82,7 +82,7 @@ class ICacheIOBundle(val outer: ICache) extends BoomBundle()(outer.p)
   // val s2_kill           = Input(Bool()) // delayed two cycles; prevents I$ miss emission
 
   val resp              = Valid(new ICacheResp(outer))
-  val ifu_s3_ready      = Input(Bool())
+  val ifu_s2_ready      = Input(Bool())
   val flush             = Input(Bool())//后端重定向以及前端的重定向
   val invalidate        = Input(Bool())
 
@@ -228,7 +228,7 @@ class ICacheLazyModule(outer: ICache) extends LazyModuleImp(outer)
   io.req.ready := mainPipe.io.fromFtq.ready && !io.flush && !io.invalidate &&
     !refillWrite
   mainPipe.io.flush := io.flush || io.invalidate
-  mainPipe.io.toIFU.ready := io.ifu_s3_ready
+  mainPipe.io.toIFU.ready := io.ifu_s2_ready
   // Export the exact MainPipe wait event for FTQ pointer/state correlation.
   io.perf.main_wait_waylookup := mainPipe.io.fromFtq.valid && !mainPipe.io.flush &&
     !mainPipe.io.wayLookupToMainPipe.valid

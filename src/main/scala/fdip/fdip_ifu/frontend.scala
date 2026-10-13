@@ -397,7 +397,7 @@ class BoomFrontendModule(outer: FDIPBoomFrontend) extends LazyModuleImp(outer)
   ifu.io.fromICache.data        := icache.io.resp.bits.data
   ifu.io.fromICache.ae          := icache.io.resp.bits.ae
   ifu.io.fromICache.replay      := icache.io.resp.bits.replay//TODO：delete it
-  icache.io.ifu_s3_ready        := ifu.io.toICache.f3_ready
+  icache.io.ifu_s2_ready        := ifu.io.toICache.f2_ready
 
   tlb.io.req(0).valid             := ftq.io.toICache.req.valid
   tlb.io.req(0).bits.cmd          := DontCare

@@ -96,7 +96,7 @@ class IFUtoFTQ(implicit p: Parameters) extends BoomBundle
 class IFUtoICache(implicit p: Parameters) extends BoomBundle
   with HasBoomFrontendParameters
 {
-  val f3_ready    = Output(Bool())
+  val f2_ready    = Output(Bool())
 }
 /**
  * Main Frontend module that connects the icache, TLB, fetch controller,
@@ -170,7 +170,7 @@ class BoomIFU(implicit p: Parameters) extends BoomModule()(p)
   f2_ready                := (!f2_valid) || f2_fire 
   f2_fire                 := f2_valid && f3_ready && !f2_flush
 
-  
+  io.toICache.f2_ready    := f2_ready
   predecoder.io.req.xcpt_ae_if:= f2_tlb_ae_if
   predecoder.io.req.xcpt_pf_if:= f2_tlb_pf_if
   predecoder.io.req.valid     := f2_fire  
@@ -195,7 +195,7 @@ class BoomIFU(implicit p: Parameters) extends BoomModule()(p)
   val f3_npc_plus4_mask   = RegEnable(f2_npc_plus4_mask,f2_fire && !f2_flush)
   val f3_edge_inst        = RegEnable(f2_edge_inst, false.B,f2_fire && !f2_flush)
 
-  io.toICache.f3_ready    := f3_ready
+
   f3_ready                := (!f3_valid)||f3_fire
   f3_fire                 := io.toIbuf.req.fire 
 

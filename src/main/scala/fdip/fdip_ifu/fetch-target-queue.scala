@@ -591,9 +591,6 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   io.toBPU.ras_commitInfo.bits.meta.ssp := bpd_update_ras_meta.ssp
   io.toBPU.ras_commitInfo.bits.meta.tosw := bpd_update_ras_meta.tosw
 
-  val ifu_redirect_entry  = RegNext(new_entry)
-
-
   val backend_redirect_meta = meta(ftqMemIdx(io.fromBackend.redirect_ftq_idx))
 
 
@@ -608,12 +605,14 @@ class FDIPFetchTargetQueue(implicit p: Parameters) extends BoomModule
   io.toBPU.redirect.valid                         := io.toBPU.redirect_val
   io.toBPU.redirect.bits.cfiPc                    := RegNext(Mux(io.fromBackend.redirect_val,backend_redirectCfiPc,ifu_redirectCfiPc))
   io.toBPU.redirect.bits.target                   := io.toBPU.redirect_pc 
+  // Sample the current IFU CFI with its redirect PC/target. Registering
+  // new_entry first would make taken belong to the previous cycle.
   io.toBPU.redirect.bits.taken                    := RegNext(Mux(io.fromBackend.redirect_val && io.fromBackend.brupdate.b2.mispredict ,
-        io.fromBackend.brupdate.b2.taken,ifu_redirect_entry.cfi_taken))
+        io.fromBackend.brupdate.b2.taken,new_entry.cfi_taken))
 
   
   // io.toBPU.redirect.bits.attb                     := RegNext(Mux(io.fromBackend.redirect_val && io.fromBackend.brupdate.b2.mispredict ,
-  //       io.fromBackend.brupdate.b2.uop.cf.attribute,ifu_redirect_entry.attribute))
+  //       io.fromBackend.brupdate.b2.uop.cf.attribute,new_entry.attribute))
   io.toBPU.redirect.bits.phrMeta                := RegNext(redirect_mem(ftqMemIdx(bpd_update_ptr)).phrMeta)
 
   //TODO: remove this, we should not repair BTB on IFU redirect

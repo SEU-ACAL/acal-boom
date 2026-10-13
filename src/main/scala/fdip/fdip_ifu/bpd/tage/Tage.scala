@@ -194,6 +194,8 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
   val s1_pc        = RegNext(s0_pc)
   val s2_pc        = RegNext(s1_pc)
 
+  val useAltOnNa   = RegInit(VecInit(Seq.fill(NumUseAltOnNa)((1<<(UseAltOnNaWidth-1)).U(UseAltOnNaWidth.W))))
+
 	val tableResults = Wire(Vec(tables.size, Vec(TageNways, new TageTableReadResp())))
 
   io.tage_pred.taken.foreach { x =>
@@ -240,6 +242,7 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
   val s2_ghist = RegNext(s1_ghist)
 
 	val s2_tageResults = RegNext(tableResults)
+  val s2_baseWeak = RegNext(io.fromBtb.s1_weak)
 	val s2_tag = RegNext(s1_tag)
 	val s2_results = io.fromBtb.results
 
@@ -247,7 +250,7 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
 		val position =  branch.bits.cfiPosition
 		val hitMask = VecInit(s2_tageResults.zipWithIndex.map{case(res,idx)=>
         VecInit((0 until TageNways).map{way=>
-          res(way).valid && res(way).tag === s2_tag(i)(idx) && res(way).valid
+          res(way).valid && res(way).tag === s2_tag(i)(idx) && res(way).valid && branch.bits.attribute.isConditional
         })
 			})
 		for (tableIdx <- 0 until tageNTables; wayIdx <- 0 until TageNways) {
@@ -289,8 +292,12 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
     val altWayEntry = Mux1H(altOH, s2_tageResults)
     val altFinalEntry = Mux1H(altHitwayMask, altWayEntry)
 
+    val altConf = Mux(hasAlt, (altFinalEntry.ctr=/=3.U && altFinalEntry.ctr=/=4.U), !s2_baseWeak(i))
+    val useAltOnNaIdx = Cat(providerIdx,altConf)
+    val useAltOnNaValue = useAltOnNa(useAltOnNaIdx)
+    val isUseAlt = useAltOnNaValue(UseAltOnNaWidth-1) === 1.U && (providerFinalEntry.ctr===3.U || providerFinalEntry.ctr===4.U)
     //TODO: add alt sel
-    val useProvider = hasProvider
+    val useProvider = hasProvider && !isUseAlt
     val providerTaken = providerFinalEntry.ctr(2)
     val altOrBasePred = Mux(hasAlt, altFinalEntry.ctr(2), branch.bits.taken)
     val selectedTableOH = VecInit(providerOH.zip(altOH).map { case (provider, alt) =>
@@ -302,6 +309,8 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
     val selectedFinalEntry = Mux1H(selectHitwayMask, selectedWayEntry)
     val selectedLookupTag = Mux1H(selectedTableOH, s2_tag(i))
     val selectedIdx = Mux1H(selectedTableOH, s2_hashIdx)
+
+
 
     val preAllocTableMask = WireInit(VecInit(
       (0 until tageNTables).map{t=>
@@ -323,12 +332,15 @@ class TageBranchPredictor(implicit p: Parameters) extends TageModule()(p)
     io.tage_pred.selectedEntry(i).ghist := s2_ghist
     io.meta.provider(i).valid := hasProvider
     io.meta.provider(i).bits  := OHToUInt(providerOH) 
+    io.meta.altOrBasePred(i) := altOrBasePred
+    io.meta.useProvider(i) := useProvider
     io.meta.alt_differs(i)    := altOrBasePred =/= providerTaken
     io.meta.provider_u(i)     := providerFinalEntry.u
     io.meta.provider_ctr(i)   := providerFinalEntry.ctr
     io.meta.allocate(i).valid := preAllocTableMask.asUInt.orR
     io.meta.allocate(i).bits  := VecInit(preAllocTableMask.map(_.asUInt))
     io.meta.provider_wayMask(i) := providerHitwayMask.asUInt
+    io.meta.altConf(i) := altConf
 	}
 
 
@@ -364,6 +376,55 @@ Train Stage
   // FIFO of write events; entry 0 is newest and includes all concurrent tables.
   val ctrWriteBypass = RegInit(VecInit(Seq.fill(params.writeBypassEntries)(
     0.U.asTypeOf(new TageWriteBypass))))
+
+  /*
+  mispred的项: 首先看是否hitBTB，如果hit 并且有provider
+    1. 如果provider是最长的，那么不需要allocate
+    2. 如果provider不是最长的，那么需要allocate
+    3. provider的Ctr同样需要更新
+    4. 如果没有provider，那么需要allocate第一个表
+    5. allocate 可以randrom alloc,高位表随机选一个 Ctr weak u=0的 或者！valid
+  对于正常的项:
+    1.hitBTB并且有provider，那么更新provider的Ctr和U
+    2.如果预测是alt给出的，更新alt的Ctr
+  allocate和正常更新的table撞了如何解决?
+    */
+  val t0_mispredHitTableMask = t0_btbMeta.zipWithIndex.map{case(btb,btbIdx)=>
+    val mispredHit = btb.valid && btb.bits.hit  && btb.bits.attribute.isConditional&&
+      t0_cfiInRange && t0_cfi.attribute.isConditional &&
+      t0_cfi.mispredict && (btb.bits.position === t0_cfi.position)
+    mispredHit
+  }
+  // which BTB entry is the provider of the mispredicted branch, if any
+  val t0_mispredHitTableMetaIdx = PriorityEncoder(t0_mispredHitTableMask)
+  val t0_mispredHitTableMeta = t0_tageMeta.provider(t0_mispredHitTableMetaIdx)
+  val t0_mispredHasProvider = t0_mispredHitTableMask.reduce(_||_) && t0_mispredHitTableMeta.valid
+  //provider是不是最长的，此时无法分配
+  val t0_providerIsLongest = t0_mispredHasProvider && (t0_mispredHitTableMeta.bits === (TageTables - 1).U)
+  //TODO:allocate 算法可以优化
+  val t0_providerWeakCorrect = t0_mispredHasProvider &&
+  (t0_tageMeta.provider_ctr(t0_mispredHitTableMetaIdx) === 3.U ||
+  t0_tageMeta.provider_ctr(t0_mispredHitTableMetaIdx) === 4.U) &&
+  t0_tageMeta.provider_ctr(t0_mispredHitTableMetaIdx)(2) === t0_cfi.taken
+
+  val t0_needAllocate = t0_cfiInRange && t0_cfi.attribute.isConditional && t0_cfi.mispredict && !t0_providerIsLongest &&
+    !(t0_tageMeta.provider(t0_mispredHitTableMetaIdx).valid && !t0_tageMeta.useProvider(t0_mispredHitTableMetaIdx) && t0_providerWeakCorrect)
+  val t0_canAllocate = t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).valid || !t0_mispredHitTableMask.reduce(_||_)
+  val t0_randAlloc = random.LFSR(width = 12)(tageNTables - 1, 0)
+  val t0_allocWayMasks = t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).bits
+  val t0_allocTableMask = VecInit(t0_allocWayMasks.map(_.orR)).asUInt
+  val t0_randAllocMask = t0_randAlloc & t0_allocTableMask
+  val t0_finalAllocMask  = Mux(t0_randAllocMask.orR,t0_randAllocMask,t0_allocTableMask)
+  val t0_allocateTableIdx = Mux(
+    t0_mispredHitTableMask.reduce(_||_) && t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).valid,
+    PriorityEncoder(t0_finalAllocMask),
+    0.U)
+  val t0_randAllocWayWidth = log2Ceil(TageNways max 2)
+  val t0_randAllocWay = random.LFSR(width = t0_randAllocWayWidth max 2)(t0_randAllocWayWidth - 1, 0)
+  val t0_randAllocWayMask = UIntToOH(t0_randAllocWay, TageNways)
+  val t0_allocateWayMask = Mux(t0_mispredHitTableMask.reduce(_||_) && t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).valid,
+          Mux(t0_allocWayMasks(t0_allocateTableIdx).andR,t0_randAllocWayMask,PriorityEncoderOH(t0_allocWayMasks(t0_allocateTableIdx))),t0_randAllocWayMask)
+
   val t0_providerState = t0_tageMeta.provider.zip(t0_btbMeta).zipWithIndex.map {
     case ((provider, btb), idx) =>
       val tableIdx = provider.bits
@@ -377,6 +438,27 @@ Train Stage
             entry.tag(tableIdx)(way) === (t0_hashTag(tableIdx) ^ btb.bits.position)
         })
       }
+      val altOnNaIdx = Cat(tableIdx, t0_tageMeta.altConf(idx))
+      val altNeedUpdate = provider.valid && (t0_tageMeta.provider_ctr(idx) ===3.U || t0_tageMeta.provider_ctr(idx) ===4.U) &&
+      t0_tageMeta.alt_differs(idx)
+      /*
+      1. 如果provider的position小于t0 cfi 且t0 taken 此时provider一定正确
+
+      */
+      val t0_taken = t0_cfi.taken
+      val providerNormal =
+        provider.valid &&
+        btb.valid &&
+        btb.bits.position >= t0_instOffset &&
+        (!t0_cfi.valid || btb.bits.position < t0_cfi.position)
+      val providerIsCfi = provider.valid && btb.valid && btb.bits.position === t0_cfi.position && t0_cfi.valid
+
+      val incUseAltOnNa = altNeedUpdate && t0_tageMeta.alt_differs(idx) && (providerNormal && t0_tageMeta.provider_ctr(idx)(2) =/= 0.U ||
+        providerIsCfi && t0_tageMeta.provider_ctr(idx)(2)=/=t0_taken)
+
+      val decUseAltOnNa = altNeedUpdate && (providerNormal && t0_tageMeta.provider_ctr(idx)(2) === 0.U ||
+        providerIsCfi && t0_tageMeta.provider_ctr(idx)(2)===t0_taken)
+
       val bypassHits = VecInit(bypassWayHits.map(_.reduce(_ || _)))
       val bypassCtrByEntry = ctrWriteBypass.zip(bypassWayHits).map { case (entry, entryWayHit) =>
         Mux1H(entryWayHit, VecInit((0 until TageNways).map(way => entry.ctr(tableIdx)(way))))
@@ -392,52 +474,32 @@ Train Stage
       val bypassCtr = Mux1H(PriorityEncoderOH(bypassHits), bypassCtrByEntry)
       val bypassU = Mux1H(PriorityEncoderOH(bypassUHits), bypassUByEntry)
       (Mux(bypassHits.asUInt.orR, bypassCtr, t0_tageMeta.provider_ctr(idx)),
-        Mux(bypassUHits.asUInt.orR, bypassU, t0_tageMeta.provider_u(idx)))
+        Mux(bypassUHits.asUInt.orR, bypassU, t0_tageMeta.provider_u(idx)),altOnNaIdx, incUseAltOnNa, decUseAltOnNa)
   }
   val t0_providerCtr = VecInit(t0_providerState.map(_._1))
   val t0_providerU = VecInit(t0_providerState.map(_._2))
-    /* 
-    mispred的项: 首先看是否hitBTB，如果hit 并且有provider
-      1. 如果provider是最长的，那么不需要allocate
-      2. 如果provider不是最长的，那么需要allocate
-      3. provider的Ctr同样需要更新
-      4. 如果没有provider，那么需要allocate第一个表
-      5. allocate 可以randrom alloc,高位表随机选一个 Ctr weak u=0的 或者！valid
-    对于正常的项:
-      1.hitBTB并且有provider，那么更新provider的Ctr和U
-      2.如果预测是alt给出的，更新alt的Ctr
-    allocate和正常更新的table撞了如何解决?
-     */
-    val t0_mispredHitTableMask = t0_btbMeta.zipWithIndex.map{case(btb,btbIdx)=>
-      val mispredHit = btb.valid && btb.bits.hit  && btb.bits.attribute.isConditional&& 
-        t0_cfiInRange && t0_cfi.attribute.isConditional &&
-        t0_cfi.mispredict && (btb.bits.position === t0_cfi.position)
-      mispredHit
+  val t0_altOnNaIdx = VecInit(t0_providerState.map(_._3))
+  val t0_incUseAltOnNa = VecInit(t0_providerState.map(_._4))
+  val t0_decUseAltOnNa = VecInit(t0_providerState.map(_._5))
+
+  useAltOnNa.zipWithIndex.foreach{case(reg,idx)=>
+    val matchIdxMask = t0_altOnNaIdx.map(_ === idx.U)
+    val incMask = VecInit(matchIdxMask.zip(t0_incUseAltOnNa).map{case(m,inc)=>m && inc})
+    val decMask = VecInit(matchIdxMask.zip(t0_decUseAltOnNa).map{case(m,dec)=>m && dec})
+    val incCtr = PopCount(incMask)
+    val decCtr = PopCount(decMask)
+    val isInc = incCtr > decCtr
+    val update = incCtr >0.U || decCtr > 0.U
+    val step = Mux(isInc, incCtr - decCtr, decCtr - incCtr)
+
+    val newVal = Mux(isInc, Mux(reg +& step >= (((1<<UseAltOnNaWidth)-1).U), (((1<<UseAltOnNaWidth)-1).U), reg + step),
+      Mux(update,Mux(reg < step, 0.U, reg - step),reg))
+    when(t0_valid && update){
+      useAltOnNa(idx) := newVal
     }
-    // which BTB entry is the provider of the mispredicted branch, if any
-    val t0_mispredHitTableMetaIdx = PriorityEncoder(t0_mispredHitTableMask)
-    val t0_mispredHitTableMeta = t0_tageMeta.provider(t0_mispredHitTableMetaIdx)
-    val t0_mispredHasProvider = t0_mispredHitTableMask.reduce(_||_) && t0_mispredHitTableMeta.valid
-    //provider是不是最长的，此时无法分配
-    val t0_providerIsLongest = t0_mispredHasProvider && (t0_mispredHitTableMeta.bits === (TageTables - 1).U)
-    //TODO:allocate 算法可以优化
-    val t0_needAllocate = t0_cfiInRange && t0_cfi.attribute.isConditional && t0_cfi.mispredict && !t0_providerIsLongest
-    val t0_canAllocate = t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).valid || !t0_mispredHitTableMask.reduce(_||_)
-    val t0_randAlloc = random.LFSR(width = 12)(tageNTables - 1, 0)
-    val t0_allocWayMasks = t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).bits
-    val t0_allocTableMask = VecInit(t0_allocWayMasks.map(_.orR)).asUInt
-    val t0_randAllocMask = t0_randAlloc & t0_allocTableMask
-    val t0_finalAllocMask  = Mux(t0_randAllocMask.orR,t0_randAllocMask,t0_allocTableMask)
-    val t0_allocateTableIdx = Mux(
-      t0_mispredHitTableMask.reduce(_||_) && t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).valid,
-      PriorityEncoder(t0_finalAllocMask),
-      0.U)
-    val t0_randAllocWayWidth = log2Ceil(TageNways max 2)
-    val t0_randAllocWay = random.LFSR(width = t0_randAllocWayWidth max 2)(t0_randAllocWayWidth - 1, 0)
-    val t0_randAllocWayMask = UIntToOH(t0_randAllocWay, TageNways)
-    val t0_allocateWayMask = Mux(t0_mispredHitTableMask.reduce(_||_) && t0_tageMeta.allocate(t0_mispredHitTableMetaIdx).valid,
-           Mux(t0_allocWayMasks(t0_allocateTableIdx).andR,t0_randAllocWayMask,PriorityEncoderOH(t0_allocWayMasks(t0_allocateTableIdx))),t0_randAllocWayMask)
-    /* 
+  }
+
+  /*
     CTR taken 111 和NT 000都不更新
     br_mask 可以得到不taken cfi可以得到taken 信息
      */

@@ -166,6 +166,7 @@ class BranchPredictor(implicit p: Parameters) extends BpdModule()(p)
   tage.io.train    := bpuTrain
   tage.io.fromBtb.results := btb.io.resp
   tage.io.fromBtb.s1_position := btb.io.s1_position
+  tage.io.fromBtb.s1_weak := btb.io.s1_weak
 
   val s2_s1_prediction  = RegEnable(s1_finalPrediction,s1_fire)
   val s2_phrMeta         = RegEnable(s1_phrMeta,s1_fire)

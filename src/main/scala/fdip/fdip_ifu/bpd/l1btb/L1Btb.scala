@@ -51,6 +51,7 @@ with L1BTBHelper{
 		Valid(new boom.fdip.ifu.bpd.l1btb.BTBPredictMeta())))
 
 		val s1_position = Output(Vec(params.nWays, UInt(log2Ceil(fetchBytes).W)))
+		val s1_weak = Output(Vec(params.nWays, Bool()))
 
 		val train = Input(Valid(new BpuTrain))
 	})
@@ -104,6 +105,9 @@ with L1BTBHelper{
 		s1_req_valid(w) && s1_req_rbtb(w).tag === s1_req_tag(tagSz-1,0)
 	})
 	io.s1_position := s1_req_rbtb.map(_.position)
+	io.s1_weak := VecInit((0 until nWays) map { w =>
+		s1_req_valid(w) && (s1_req_rcnt(w)=== 1.U || s1_req_rcnt(w)=== 2.U)
+	})
 	val s1_valid    = RegNext(s0_valid)
 	val s1_hit_way  = PriorityEncoder(s1_hits)
 
@@ -183,7 +187,7 @@ with L1BTBHelper{
 	val t1_priorHits = VecInit((0 until nWays).map { w =>
 		// Entries before this request's start PC were not executed.
 		t1_blockHits(w) && t1_current_entries(w).position >= t1_instOffset &&
-			t1_current_entries(w).position < t1_cfi.position
+			(!t0_cfi.valid || t1_current_entries(w).position < t1_cfi.position)
 	})
 	val t1_cfiHitEntry = Mux1H(t1_cfiHits, t1_current_entries)
 
@@ -225,7 +229,7 @@ with L1BTBHelper{
 	val t1_trainCfi = t1_valid && t1_cfi.valid
 	//TODO: add indirect branch update logic
 	val t1_needUpdateEntry = t1_valid && t1_cfi.valid && t1_cfi.position >= t1_instOffset &&
-		t1_cfi.mispredict && (!t1_cfiHit || t1_cfiHitEntry.attribute =/= t1_cfi.attribute || t1_cfi.attribute.isOtherIndirect)
+		t1_cfi.mispredict && (!t1_cfiHit || t1_cfiHitEntry.attribute =/= t1_cfi.attribute || t1_cfi.attribute.needIttage)
 	val t1_updateEntryWay = Mux(!t1_cfiHit, replacementWay, PriorityEncoder(t1_cfiHits))
 
 	val t1_needUpdateCtr = WireInit(VecInit(Seq.tabulate(nWays)(_ => false.B)))

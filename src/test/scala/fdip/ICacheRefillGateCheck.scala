@@ -91,7 +91,7 @@ object ICacheRefillGateCheck {
       io.fetch_ready := dut.io.req.ready
       io.response_valid := dut.io.resp.valid
       io.response_data := dut.io.resp.bits.data
-      dut.io.ifu_s3_ready := io.ifu_ready
+      dut.io.ifu_s2_ready := io.ifu_ready
       dut.io.flush := io.flush
       dut.io.invalidate := io.invalidate
       dut.io.prefetch_tlb_req.ready := true.B

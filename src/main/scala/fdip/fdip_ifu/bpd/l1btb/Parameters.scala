@@ -12,7 +12,7 @@ import boom.fdip.ifu.bpd.ubtb.BoomFAMicroBTBParams
 import boom.fdip.ifu.bpd.tage.BoomTageParams
 /** Configuration owned by the FDIP level-1 BTB predictor. */
 case class BoomL1BTBParams(
-  nSets: Int = 128,
+  nSets: Int = 256,
   nWays: Int = 4,
   offsetSz: Int = 20,
   writeBypassEntries: Int = 4

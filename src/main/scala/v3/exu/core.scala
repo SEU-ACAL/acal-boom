@@ -297,6 +297,25 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     XSPerfAccumulate("branch_resolved", PopCount(brinfos.map(_.valid)))
     XSPerfAccumulate("branch_mispredict", b2.mispredict)
     XSPerfAccumulate("control_flow_target_mispredict", b2.mispredict && b2.cfi_type === CFI_JALR)
+    XSPerfSeqAccumulate("branch_mispredict", b2.mispredict,
+      BranchMPKI.mispredictBreakdown(
+        b2.cfi_type === CFI_BR, b2.cfi_type === CFI_JAL, b2.cfi_type === CFI_JALR,
+        b2.uop.ldst, b2.uop.lrs1, b2.taken, b2.uop.taken))
+    // JAL is resolved by V3's frontend and does not generate b2.mispredict.
+    // Its architectural commits still belong to call/directuncond below.
+    val committedBranchClasses = rob.io.commit.uops.map { uop =>
+      BranchMPKI.classify(uop.is_br, uop.is_jal, uop.is_jalr, uop.ldst, uop.lrs1)
+    }
+    for ((kind, index) <- BranchMPKI.kinds.zipWithIndex) {
+      XSPerfAccumulate(s"branch_commit_${kind}", PopCount(VecInit(
+        committedBranchClasses.zip(rob.io.commit.arch_valids).map {
+          case (classes, valid) => valid && classes(index)._2
+        })))
+    }
+    XSPerfAccumulate("branch_commit_total", PopCount(VecInit(
+      committedBranchClasses.zip(rob.io.commit.arch_valids).map {
+        case (classes, valid) => valid && classes.map(_._2).reduce(_ || _)
+      })))
     XSPerfAccumulate("flush", rob.io.flush.valid)
     XSPerfAccumulate("icache_demand_miss", io.ifu.perf.acquire)
     XSPerfAccumulate("dcache_miss", io.lsu.perf.acquire)
